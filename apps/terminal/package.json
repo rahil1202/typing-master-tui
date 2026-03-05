@@ -1,26 +1,51 @@
 {
-  "name": "@typing-master/terminal",
+  "name": "typing-master-terminal",
   "version": "0.1.0",
+  "description": "A fast, full-screen terminal typing trainer with lessons, tests, stats, and races.",
+  "license": "MIT",
+  "author": "typing-master-terminal contributors",
+  "keywords": [
+    "typing",
+    "terminal",
+    "cli",
+    "tui",
+    "wpm",
+    "practice"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/typing-master/typing-master-terminal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/typing-master/typing-master-terminal/issues"
+  },
+  "homepage": "https://github.com/typing-master/typing-master-terminal#readme",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "typing-master": "dist/index.js"
   },
   "scripts": {
+    "clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run clean && npm run build",
+    "publish:check": "npm pack --dry-run"
   },
   "dependencies": {
-    "@blessed/blessed-contrib": "^1.0.1",
-    "@blessed/neo-blessed": "^1.0.0",
     "@inkjs/ui": "^2.0.0",
-    "@typing-master/content": "0.1.0",
-    "@typing-master/protocol": "0.1.0",
-    "@typing-master/storage": "0.1.0",
-    "@typing-master/typing-engine": "0.1.0",
+    "better-sqlite3": "^11.8.1",
     "blessed": "^0.1.81",
     "charsm": "^0.2.0",
     "cli-spinners": "^2.9.2",
@@ -32,8 +57,12 @@
     "ws": "^8.18.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/blessed": "^0.1.25",
     "@types/react": "^19.2.14",
     "@types/ws": "^8.5.14"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

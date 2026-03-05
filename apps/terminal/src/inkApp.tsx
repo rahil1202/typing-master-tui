@@ -4,9 +4,9 @@ import { ProgressBar, Spinner } from "@inkjs/ui";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty } from "@typing-master/content";
-import { Storage, type TrainingProgress } from "@typing-master/storage";
-import { TypingSession, type RunMode } from "@typing-master/typing-engine";
+import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty } from "./core/content.js";
+import { Storage, type TrainingProgress } from "./core/storage.js";
+import { TypingSession, type RunMode } from "./core/typingEngine.js";
 
 type GameLevel = "very-easy" | "easy" | "medium" | "hard" | "expert" | "insane";
 type View = "loading" | "menu" | "typing" | "result" | "stats" | "level" | "training";

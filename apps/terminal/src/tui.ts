@@ -1,5 +1,4 @@
 import blessed from "blessed";
-import contrib from "@blessed/blessed-contrib";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,10 +6,38 @@ import spinners from "cli-spinners";
 import gradient from "gradient-string";
 import stringWidth from "string-width";
 import { initLip, Lipgloss } from "charsm";
-import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "@typing-master/content";
-import type { RunResult } from "@typing-master/typing-engine";
-import { Storage, type TrainingProgress } from "@typing-master/storage";
-import { TypingSession } from "@typing-master/typing-engine";
+import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
+import type { RunResult } from "./core/typingEngine.js";
+import { Storage, type TrainingProgress } from "./core/storage.js";
+import { TypingSession } from "./core/typingEngine.js";
+
+const THEME = {
+  bg: "black",
+  text: "white",
+  muted: "gray",
+  brand: "cyan",
+  accent: "yellow",
+  ok: "green",
+  bad: "red",
+  borderPrimary: "cyan",
+  borderSecondary: "magenta"
+} as const;
+
+const UI = {
+  viewportChars: 210,
+  liveTickerMs: 100,
+  transitionInMs: 380,
+  transitionOutMs: 320
+} as const;
+
+let contribCache: unknown = null;
+
+async function loadContrib(): Promise<any> {
+  if (contribCache) return contribCache;
+  const mod = await import("@blessed/blessed-contrib");
+  contribCache = (mod.default ?? mod) as unknown;
+  return contribCache;
+}
 
 let lip: Lipgloss | null = null;
 let lipInitStarted = false;
@@ -112,7 +139,7 @@ export function runTui(dbPath: string): void {
     width: "100%",
     height: 1,
     tags: true,
-    style: { bg: "black", fg: "cyan", bold: true }
+    style: { bg: THEME.bg, fg: THEME.brand, bold: true }
   });
 
   const statsBar = blessed.box({
@@ -122,7 +149,7 @@ export function runTui(dbPath: string): void {
     width: "100%",
     height: 1,
     tags: true,
-    style: { bg: "black", fg: "white" }
+    style: { bg: THEME.bg, fg: THEME.text }
   });
 
   const menu = blessed.list({
@@ -138,9 +165,9 @@ export function runTui(dbPath: string): void {
     vi: true,
     mouse: true,
     style: {
-      border: { fg: "magenta" },
-      item: { fg: "white" },
-      selected: { bg: "yellow", fg: "black", bold: true }
+      border: { fg: THEME.borderSecondary },
+      item: { fg: THEME.text },
+      selected: { bg: THEME.accent, fg: "black", bold: true }
     },
     items: ["Practice Training", "Lessons", "Typing Test", "Custom Test", "Stats", "Game Level", "Toggle Sound", "Toggle Keyboard", "Quit"]
   });
@@ -159,8 +186,8 @@ export function runTui(dbPath: string): void {
     mouse: true,
     keys: true,
     vi: true,
-    style: { border: { fg: "cyan" }, fg: "white", bg: "black" },
-    scrollbar: { ch: " ", style: { bg: "magenta" } }
+    style: { border: { fg: THEME.borderPrimary }, fg: THEME.text, bg: THEME.bg },
+    scrollbar: { ch: " ", style: { bg: THEME.borderSecondary } }
   });
 
   const resetPanel = (): void => {
@@ -177,7 +204,7 @@ export function runTui(dbPath: string): void {
     width: "100%",
     height: 1,
     tags: true,
-    style: { bg: "black", fg: "gray" },
+    style: { bg: THEME.bg, fg: THEME.muted },
     content: " Enter select  ·  ESC back  ·  F3 sound  ·  F2 keyboard  ·  q quit "
   });
 
@@ -208,11 +235,13 @@ export function runTui(dbPath: string): void {
     resetPanel();
     panel.setLabel(" Session ");
     panel.setContent(
-      "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}\n" +
-      "{gray-fg}Minimal. Fast. Focused.{/gray-fg}\n\n" +
-      "{white-fg}Pick a mode from the left menu.{/white-fg}\n\n" +
-      "{yellow-fg}Target{/yellow-fg}: upcoming text\n" +
-      "{white-fg}Output{/white-fg}: your typed stream with {green-fg}green{/green-fg}/{red-fg}red{/red-fg} feedback"
+      renderCard(
+        "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}",
+        "Minimal. Fast. Focused.\n\n" +
+        "{white-fg}Pick a mode from the left menu.{/white-fg}\n\n" +
+        "{yellow-fg}Target{/yellow-fg}: upcoming text\n" +
+        "{white-fg}Output{/white-fg}: your typed stream with {green-fg}green{/green-fg}/{red-fg}red{/red-fg} feedback"
+      )
     );
     renderHeader();
     renderIdleStats();
@@ -302,11 +331,13 @@ export function runTui(dbPath: string): void {
       const live = computeLiveMetrics(snap.typed.length, snap.correctChars, snap.mistakes, elapsed);
       const progress = Math.floor((snap.cursor / Math.max(1, text.length)) * 100);
       renderLiveStats(live.netWpm, live.accuracy, snap.mistakes, progress);
-      const viewport = createViewport(text, snap.cursor, 210);
+      const viewport = createViewport(text, snap.cursor, UI.viewportChars);
 
       panel.setContent(
-        `{bold}{yellow-fg}TARGET{/yellow-fg}{/bold}\n${renderTargetDiff(text, snap.typed, viewport)}\n\n` +
-        `{bold}{white-fg}OUTPUT{/white-fg}{/bold}\n${renderTypedDiff(text, snap.typed, viewport)}\n\n` +
+        renderSection("TARGET", renderTargetDiff(text, snap.typed, viewport), THEME.accent) +
+        "\n\n" +
+        renderSection("OUTPUT", renderTypedDiff(text, snap.typed, viewport), THEME.text) +
+        "\n\n" +
         (settings.showKeyboard ? `{bold}Keyboard{/bold}\n${renderKeyboard(lastKeyPress, settings.keyAnimation)}\n\n` : "") +
         `{gray-fg}ESC exit{/gray-fg}`
       );
@@ -322,6 +353,8 @@ export function runTui(dbPath: string): void {
       onComplete?.(result);
       renderHeader();
       renderIdleStats();
+      cleanupInput();
+      void runExitTransition(panel, () => {
       panel.setLabel(" Result ");
       panel.setContent(
         lip
@@ -341,7 +374,6 @@ export function runTui(dbPath: string): void {
             `{gray-fg}Press any key to return{/gray-fg}`
       );
       screen.render();
-      cleanupInput();
       const returnHome = (): void => renderHome();
       screen.once("keypress", returnHome);
       screen.once("mousedown", returnHome);
@@ -350,6 +382,7 @@ export function runTui(dbPath: string): void {
         const isDestroyed = Boolean((screen as unknown as { destroyed?: boolean }).destroyed);
         if (!isDestroyed) renderHome();
       }, 1500);
+      });
     };
 
     const onKeyEvent = (key: { name?: string; sequence?: string }): void => {
@@ -434,19 +467,20 @@ export function runTui(dbPath: string): void {
     screen.on("keypress", keypressHandler);
     panel.focus();
     if (settings.sound) playStartSound();
-
-    const liveTicker = setInterval(() => {
-      if (!running) {
-        clearInterval(liveTicker);
-        return;
-      }
-      // Keep stats/progress moving smoothly without 60fps full re-render.
+    void runStartTransition(panel, mode).then(() => {
+      if (!running) return;
+      const liveTicker = setInterval(() => {
+        if (!running) {
+          clearInterval(liveTicker);
+          return;
+        }
+        // Keep stats/progress moving smoothly without 60fps full re-render.
+        dirty = true;
+        draw();
+      }, UI.liveTickerMs);
       dirty = true;
-      draw();
-    }, 125);
-
-    dirty = true;
-    queueDraw();
+      queueDraw();
+    });
   }
 
   function showLessons(): void {
@@ -643,10 +677,18 @@ export function runTui(dbPath: string): void {
   }
 
   function showStats(): void {
+    void renderStatsDashboard();
+  }
+
+  async function renderStatsDashboard(): Promise<void> {
     resetPanel();
+    panel.setLabel(" Stats ");
+    panel.setContent("{gray-fg}Loading stats widgets...{/gray-fg}");
+    screen.render();
+    const contrib = await loadContrib();
+
     const s = storage.getStats90d();
     const runs = storage.getRuns(60);
-    panel.setLabel(" Stats ");
 
     const width = typeof screen.width === "number" ? screen.width : 120;
     const height = typeof screen.height === "number" ? screen.height : 36;
@@ -1015,4 +1057,71 @@ function formatRelativeTime(iso: string): string {
   if (delta < 3600000) return `${Math.floor(delta / 60000)}m ago`;
   if (delta < 86400000) return `${Math.floor(delta / 3600000)}h ago`;
   return `${Math.floor(delta / 86400000)}d ago`;
+}
+
+function renderCard(title: string, body: string): string {
+  return (
+    `{bold}{${THEME.brand}-fg}${title}{/${THEME.brand}-fg}{/bold}\n` +
+    `{${THEME.muted}-fg}${"─".repeat(36)}{/${THEME.muted}-fg}\n` +
+    `${body}`
+  );
+}
+
+function renderSection(title: string, content: string, color: string): string {
+  return (
+    `{bold}{${color}-fg}${title}{/${color}-fg}{/bold}\n` +
+    `{${THEME.muted}-fg}${"·".repeat(28)}{/${THEME.muted}-fg}\n` +
+    `${content}`
+  );
+}
+
+function runStartTransition(panel: blessed.Widgets.BoxElement, mode: "lesson" | "test" | "custom"): Promise<void> {
+  return new Promise((resolve) => {
+    const frames = spinners.dots.frames;
+    const startedAt = Date.now();
+    let i = 0;
+    const tick = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const pct = Math.min(100, Math.floor((elapsed / UI.transitionInMs) * 100));
+      panel.setContent(
+        renderCard(
+          `Starting ${mode.toUpperCase()}`,
+          `{${THEME.accent}-fg}${frames[i % frames.length]} Preparing session...{/${THEME.accent}-fg}\n` +
+          `${progressBar(pct, 26)} ${pct}%`
+        )
+      );
+      i += 1;
+      panel.screen.render();
+      if (elapsed >= UI.transitionInMs) {
+        clearInterval(tick);
+        resolve();
+      }
+    }, spinners.dots.interval);
+  });
+}
+
+function runExitTransition(panel: blessed.Widgets.BoxElement, onDone: () => void): Promise<void> {
+  return new Promise((resolve) => {
+    const frames = spinners.line.frames;
+    const startedAt = Date.now();
+    let i = 0;
+    const tick = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const pct = Math.min(100, Math.floor((elapsed / UI.transitionOutMs) * 100));
+      panel.setContent(
+        renderCard(
+          "Finalizing Run",
+          `{${THEME.brand}-fg}${frames[i % frames.length]} Scoring and saving...{/${THEME.brand}-fg}\n` +
+          `${progressBar(pct, 22)}`
+        )
+      );
+      i += 1;
+      panel.screen.render();
+      if (elapsed >= UI.transitionOutMs) {
+        clearInterval(tick);
+        onDone();
+        resolve();
+      }
+    }, spinners.line.interval);
+  });
 }
