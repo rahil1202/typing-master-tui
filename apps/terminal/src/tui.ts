@@ -3,12 +3,46 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import spinners from "cli-spinners";
+import gradient from "gradient-string";
+import stringWidth from "string-width";
+import { initLip, Lipgloss } from "charsm";
 import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "@typing-master/content";
 import type { RunResult } from "@typing-master/typing-engine";
 import { Storage, type TrainingProgress } from "@typing-master/storage";
 import { TypingSession } from "@typing-master/typing-engine";
 
+let lip: Lipgloss | null = null;
+let lipInitStarted = false;
+
+function ensureLipInit(): void {
+  if (lipInitStarted) return;
+  lipInitStarted = true;
+  void initLip().then((ok) => {
+    if (!ok) return;
+    lip = new Lipgloss();
+    lip.createStyle({
+      id: "splash",
+      canvasColor: { color: "#f8fafc", background: "#0b1220" },
+      border: { type: "rounded", foreground: "#22d3ee", sides: [true] },
+      padding: [1, 2, 1, 2],
+      margin: [0],
+      bold: true
+    });
+    lip.createStyle({
+      id: "result",
+      canvasColor: { color: "#e2e8f0", background: "#102133" },
+      border: { type: "rounded", foreground: "#22c55e", sides: [true] },
+      padding: [1, 2, 1, 2],
+      margin: [0],
+      bold: true
+    });
+  }).catch(() => {
+    lip = null;
+  });
+}
+
 export function runTui(dbPath: string): void {
+  ensureLipInit();
   const storage = new Storage(dbPath);
   const profile = storage.getOrCreateProfile(os.userInfo().username || "Guest");
   storage.pruneHistory();
@@ -131,8 +165,12 @@ export function runTui(dbPath: string): void {
   });
 
   const renderHeader = (): void => {
+    const logo = gradient(["#22d3ee", "#a78bfa"])("Typing Master");
+    const raw = `${logo} · ${profile.nickname} · ${selectedLevel.toUpperCase()} · Flow Mode`;
+    const cols = typeof screen.width === "number" ? screen.width : 120;
+    const clipped = clipAnsiAware(raw, Math.max(20, cols - 2));
     header.setContent(
-      ` {bold}{yellow-fg}Typing Master{/yellow-fg}{/bold} · ${escapeTags(profile.nickname)} · ${selectedLevel.toUpperCase()} · Flow Mode`
+      ` ${clipped}`
     );
   };
 
@@ -189,12 +227,12 @@ export function runTui(dbPath: string): void {
     const tick = setInterval(() => {
       const elapsed = Date.now() - start;
       const pct = Math.min(100, Math.floor((elapsed / 1400) * 100));
-      splash.setContent(
-        "{bold}{cyan-fg}Initializing Typing Master{/cyan-fg}{/bold}\n\n" +
+      const plain =
+        `Initializing Typing Master\n\n` +
         `${frames[i % frames.length]}  Loading interface...\n` +
         `${progressBar(pct, 30)} ${pct}%\n\n` +
-        "{gray-fg}Powered by Blessed + cli-spinners{/gray-fg}"
-      );
+        `Powered by Blessed + charsm`;
+      splash.setContent(lip ? lip.apply({ value: plain, id: "splash" }) : plain);
       i += 1;
       screen.render();
 
@@ -257,11 +295,21 @@ export function runTui(dbPath: string): void {
       renderIdleStats();
       panel.setLabel(" Result ");
       panel.setContent(
-        `{bold}{green-fg}Run Complete{/green-fg}{/bold}\n\n` +
-        `Net WPM: {green-fg}${result.netWpm}{/green-fg}\n` +
-        `Accuracy: {yellow-fg}${result.accuracy}%{/yellow-fg}\n` +
-        `Mistakes: {red-fg}${result.mistakes}{/red-fg}\n\n` +
-        `{gray-fg}Press any key to return{/gray-fg}`
+        lip
+          ? lip.apply({
+              value:
+                `Run Complete\n\n` +
+                `Net WPM: ${result.netWpm}\n` +
+                `Accuracy: ${result.accuracy}%\n` +
+                `Mistakes: ${result.mistakes}\n\n` +
+                `Press any key to return`,
+              id: "result"
+            })
+          : `{bold}{green-fg}Run Complete{/green-fg}{/bold}\n\n` +
+            `Net WPM: {green-fg}${result.netWpm}{/green-fg}\n` +
+            `Accuracy: {yellow-fg}${result.accuracy}%{/yellow-fg}\n` +
+            `Mistakes: {red-fg}${result.mistakes}{/red-fg}\n\n` +
+            `{gray-fg}Press any key to return{/gray-fg}`
       );
       screen.render();
       cleanupInput();
@@ -773,4 +821,9 @@ function round2(n: number): number {
 
 function escapeTags(value: string): string {
   return value.replace(/[{}/]/g, "\\$&");
+}
+
+function clipAnsiAware(value: string, maxCols: number): string {
+  if (stringWidth(value) <= maxCols) return value;
+  return `${value.slice(0, Math.max(0, maxCols - 1))}…`;
 }
