@@ -1,0 +1,26 @@
+{
+  "name": "typing-master-terminal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Terminal Typing Master clone monorepo",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @typing-master/protocol build && npm run -w @typing-master/typing-engine build && npm run -w @typing-master/content build && npm run -w @typing-master/storage build && npm run -w @typing-master/race-server build && npm run -w @typing-master/terminal build",
+    "dev": "npm run -w @typing-master/terminal dev",
+    "test": "npm run --workspaces test",
+    "typecheck": "npm run --workspaces typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "fast-check": "^3.23.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

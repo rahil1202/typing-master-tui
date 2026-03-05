@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: typing-master-race-server
+    runtime: node
+    plan: starter
+    rootDir: apps/race-server
+    buildCommand: npm install && npm run build
+    startCommand: npm run dev
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PORT
+        value: "8080"

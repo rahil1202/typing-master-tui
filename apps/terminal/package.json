@@ -1,0 +1,37 @@
+{
+  "name": "@typing-master/terminal",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "typing-master": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@blessed/blessed-contrib": "^1.0.1",
+    "@inkjs/ui": "^2.0.0",
+    "@typing-master/content": "0.1.0",
+    "@typing-master/protocol": "0.1.0",
+    "@typing-master/storage": "0.1.0",
+    "@typing-master/typing-engine": "0.1.0",
+    "blessed": "^0.1.81",
+    "cli-spinners": "^2.9.2",
+    "commander": "^13.1.0",
+    "gradient-string": "^3.0.0",
+    "ink": "^6.8.0",
+    "react": "^19.2.4",
+    "string-width": "^8.2.0",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.25",
+    "@types/react": "^19.2.14",
+    "@types/ws": "^8.5.14"
+  }
+}
