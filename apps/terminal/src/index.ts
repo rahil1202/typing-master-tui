@@ -72,16 +72,16 @@ program
 
 program
   .command("play", { isDefault: true })
-  .description("Launch Ink UI (new)")
+  .description("Launch full-screen TUI (recommended)")
   .action(() => {
-    runInkApp(getDbPath());
+    runTui(getDbPath());
   });
 
 program
-  .command("play-blessed")
-  .description("Launch legacy Blessed TUI")
+  .command("play-ink")
+  .description("Launch Ink UI (line-based)")
   .action(() => {
-    runTui(getDbPath());
+    runInkApp(getDbPath());
   });
 
 program.parse(process.argv);
