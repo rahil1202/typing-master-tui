@@ -6,7 +6,7 @@ import spinners from "cli-spinners";
 import gradient from "gradient-string";
 import stringWidth from "string-width";
 import { initLip, Lipgloss } from "charsm";
-import { composeAdaptiveDrill, getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
+import { composeAdaptiveDrill, getDifficultyConfig, getLessonsForDifficulty, makeParagraphTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
 import type { RunResult } from "./core/typingEngine.js";
 import { Storage, type TrainingProgress } from "./core/storage.js";
 import { TypingSession } from "./core/typingEngine.js";
@@ -669,8 +669,8 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     const level = getLevelProfile(selectedLevel);
     const cfg = getDifficultyConfig(level.difficulty);
     const wordCount = Math.max(12, cfg.wordCount + level.extraWords);
-    const text = makeWordTest(wordCount, Math.floor(Date.now() / 1000) + cfg.seedOffset);
-    runTypingMode("test", text, `words-${selectedLevel}-${Date.now()}`, level.difficulty);
+    const text = makeParagraphTest(level.difficulty, wordCount, Math.floor(Date.now() / 1000) + cfg.seedOffset);
+    runTypingMode("test", text, `paragraph-${selectedLevel}-${Date.now()}`, level.difficulty);
   }
 
   function showCustomTest(): void {
@@ -952,19 +952,58 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   };
 
   const openCommandPalette = (): void => {
+    type PaletteAction = { label: string; run: () => void };
+    const actions: PaletteAction[] = [
+      { label: "Training: Open Practice", run: () => onMenuPick(0) },
+      { label: "Coach: Open Insights", run: () => onMenuPick(5) },
+      { label: "Stats: Open Dashboard", run: () => onMenuPick(4) },
+      {
+        label: "System: Toggle Performance Mode",
+        run: () => {
+          settings = { ...settings, performanceMode: !settings.performanceMode };
+          storage.saveSettings(settings);
+          if (settings.performanceMode || forcedPerfHud) perfHud.show(); else perfHud.hide();
+          showToast(`Performance mode ${settings.performanceMode ? "ON" : "OFF"}`);
+        }
+      },
+      { label: "Audio: Toggle Sound", run: () => onMenuPick(7) },
+      { label: "Visual: Toggle Keyboard", run: () => onMenuPick(8) },
+      {
+        label: "System: Run Doctor",
+        run: () => {
+          const report = runDoctor();
+          showToast(`Doctor: ${report.terminalHost}, input ${report.recommendedInputStrategy}`);
+        }
+      },
+      { label: "Close Palette", run: () => undefined }
+    ];
+    let query = "";
+    let filtered = [...actions];
+    let closing = false;
+    const sh = typeof screen.height === "number" ? screen.height : 40;
+    const sw = typeof screen.width === "number" ? screen.width : 120;
+    const width = Math.max(54, Math.floor(sw * 0.56));
+    const left = Math.max(0, Math.floor((sw - width) / 2));
+    const finalTop = Math.max(3, Math.floor(sh * 0.35));
+    const startTop = finalTop + 4;
+    const listHeight = Math.max(10, Math.min(14, Math.floor(sh * 0.34)));
+    const titleTop = Math.max(1, finalTop - 3);
+    const hintTop = Math.min(sh - 2, finalTop + listHeight + 1);
+
     const overlay = blessed.box({
       parent: screen,
       top: 0,
       left: 0,
       width: "100%",
       height: "100%",
-      style: { bg: "black" }
+      style: { bg: "black" },
+      mouse: true
     });
     const title = blessed.box({
       parent: screen,
-      top: "30%",
-      left: "center",
-      width: "56%",
+      top: startTop - 3,
+      left,
+      width,
       height: 2,
       tags: true,
       align: "center",
@@ -972,10 +1011,10 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     });
     const palette = blessed.list({
       parent: screen,
-      top: "35%",
-      left: "center",
-      width: "56%",
-      height: 11,
+      top: startTop,
+      left,
+      width,
+      height: listHeight,
       border: "line",
       label: " Actions ",
       keys: true,
@@ -986,55 +1025,110 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
         item: { fg: "white" },
         selected: { bg: "yellow", fg: "black", bold: true }
       },
-      items: [
-        "Training: Open Practice",
-        "Coach: Open Insights",
-        "Stats: Open Dashboard",
-        "System: Toggle Performance Mode",
-        "Audio: Toggle Sound",
-        "Visual: Toggle Keyboard",
-        "System: Run Doctor",
-        "Close Palette"
-      ]
+      items: actions.map((a) => a.label)
     });
     const hint = blessed.box({
       parent: screen,
-      top: "78%",
-      left: "center",
-      width: "56%",
+      top: hintTop,
+      left,
+      width,
       height: 1,
       tags: true,
       align: "center",
-      content: "{gray-fg}Enter select · Esc close · ↑/↓ navigate{/gray-fg}"
+      content: "{gray-fg}Type to filter · Backspace edit · Enter select · Esc close{/gray-fg}"
     });
+    hint.hide();
     palette.focus();
-    const close = (): void => {
-      hint.destroy();
-      title.destroy();
-      palette.destroy();
-      overlay.destroy();
-      menu.focus();
+
+    const updateFilter = (): void => {
+      const q = query.trim().toLowerCase();
+      filtered = q.length === 0 ? [...actions] : actions.filter((a) => a.label.toLowerCase().includes(q));
+      palette.setItems(filtered.length > 0 ? filtered.map((a) => a.label) : ["No matching actions"]);
+      palette.select(0);
+      title.setContent(
+        `{bold}{cyan-fg}Command Palette{/cyan-fg}{/bold}  ` +
+        `{gray-fg}query:{/gray-fg} {yellow-fg}${escapeTags(query || "all")}{/yellow-fg}`
+      );
       screen.render();
     };
+
+    const animateOpen = (): void => {
+      const steps = 6;
+      let i = 0;
+      const t = setInterval(() => {
+        i += 1;
+        const p = i / steps;
+        const top = Math.round(startTop + (finalTop - startTop) * p);
+        title.top = top - 3;
+        palette.top = top;
+        screen.render();
+        if (i >= steps) {
+          clearInterval(t);
+          hint.show();
+          screen.render();
+        }
+      }, 18);
+    };
+
+    const close = (): void => {
+      if (closing) return;
+      closing = true;
+      hint.hide();
+      const steps = 5;
+      let i = 0;
+      const fromTop = typeof palette.top === "number" ? palette.top : finalTop;
+      const toTop = fromTop + 3;
+      const t = setInterval(() => {
+        i += 1;
+        const p = i / steps;
+        const top = Math.round(fromTop + (toTop - fromTop) * p);
+        title.top = top - 3;
+        palette.top = top;
+        screen.render();
+        if (i >= steps) {
+          clearInterval(t);
+          hint.destroy();
+          title.destroy();
+          palette.destroy();
+          overlay.destroy();
+          menu.focus();
+          screen.render();
+        }
+      }, 16);
+    };
+
     const pick = (idx: number): void => {
-      if (idx === 0) onMenuPick(0);
-      else if (idx === 1) onMenuPick(5);
-      else if (idx === 2) onMenuPick(4);
-      else if (idx === 3) {
-        settings = { ...settings, performanceMode: !settings.performanceMode };
-        storage.saveSettings(settings);
-        if (settings.performanceMode || forcedPerfHud) perfHud.show(); else perfHud.hide();
-        showToast(`Performance mode ${settings.performanceMode ? "ON" : "OFF"}`);
-      } else if (idx === 4) onMenuPick(7);
-      else if (idx === 5) onMenuPick(8);
-      else if (idx === 6) {
-        const report = runDoctor();
-        showToast(`Doctor: ${report.terminalHost}, input ${report.recommendedInputStrategy}`);
-      }
+      if (filtered.length === 0) return;
+      const action = filtered[idx];
+      if (!action) return;
+      if (action.label !== "Close Palette") action.run();
       close();
     };
+
     palette.on("select", (_item, idx) => pick(idx));
+    palette.on("keypress", (ch: string, key: blessed.Widgets.Events.IKeyEventArg) => {
+      if (key.name === "escape") return close();
+      if (key.name === "enter" || key.name === "return") {
+        const selected = (palette as unknown as { selected?: number }).selected;
+        return pick(typeof selected === "number" ? selected : 0);
+      }
+      if (key.name === "backspace" || key.name === "delete") {
+        if (query.length === 0) return;
+        query = query.slice(0, -1);
+        return updateFilter();
+      }
+      if (key.ctrl && key.name === "u") {
+        query = "";
+        return updateFilter();
+      }
+      if (typeof ch === "string" && ch.length === 1 && ch >= " " && ch <= "~") {
+        query += ch;
+        return updateFilter();
+      }
+    });
+    overlay.on("click", close);
     palette.key(["escape"], close);
+    animateOpen();
     screen.render();
   };
 

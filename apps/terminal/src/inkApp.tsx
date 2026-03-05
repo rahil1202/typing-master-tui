@@ -4,7 +4,7 @@ import { ProgressBar, Spinner } from "@inkjs/ui";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty } from "./core/content.js";
+import { getDifficultyConfig, getLessonsForDifficulty, makeParagraphTest, normalizeCustomText, pickQuote, type Difficulty } from "./core/content.js";
 import { Storage, type TrainingProgress } from "./core/storage.js";
 import { TypingSession, type RunMode } from "./core/typingEngine.js";
 
@@ -186,8 +186,8 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
         const profile = getLevelProfile(selectedLevel);
         const cfg = getDifficultyConfig(profile.difficulty);
         const count = Math.max(12, cfg.wordCount + profile.extraWords);
-        const text = makeWordTest(count, Math.floor(Date.now() / 1000) + cfg.seedOffset);
-        startRun("test", text, `words-${selectedLevel}-${Date.now()}`, profile.difficulty);
+        const text = makeParagraphTest(profile.difficulty, count, Math.floor(Date.now() / 1000) + cfg.seedOffset);
+        startRun("test", text, `paragraph-${selectedLevel}-${Date.now()}`, profile.difficulty);
         break;
       }
       case "Custom Test": {
