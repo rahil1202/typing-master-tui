@@ -30,15 +30,6 @@ const UI = {
   transitionOutMs: 320
 } as const;
 
-let contribCache: unknown = null;
-
-async function loadContrib(): Promise<any> {
-  if (contribCache) return contribCache;
-  const mod = await import("@blessed/blessed-contrib");
-  contribCache = (mod.default ?? mod) as unknown;
-  return contribCache;
-}
-
 let lip: Lipgloss | null = null;
 let lipInitStarted = false;
 
@@ -677,154 +668,44 @@ export function runTui(dbPath: string): void {
   }
 
   function showStats(): void {
-    void renderStatsDashboard();
-  }
-
-  async function renderStatsDashboard(): Promise<void> {
     resetPanel();
     panel.setLabel(" Stats ");
-    panel.setContent("{gray-fg}Loading stats widgets...{/gray-fg}");
-    screen.render();
-    const contrib = await loadContrib();
-
     const s = storage.getStats90d();
     const runs = storage.getRuns(60);
-
-    const width = typeof screen.width === "number" ? screen.width : 120;
-    const height = typeof screen.height === "number" ? screen.height : 36;
-
-    if (width < 110 || height < 28) {
-      panel.setContent(
-        `{bold}{cyan-fg}Stats Dashboard{/cyan-fg}{/bold}\n\n` +
-        `Terminal too small for chart widgets.\n` +
-        `Resize to at least 110x28 for full dashboard.\n\n` +
-        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM\n` +
-        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM\n` +
-        `{magenta-fg}Accuracy{/magenta-fg}: ${s.avgAccuracy}%\n` +
-        `{blue-fg}Consistency{/blue-fg}: ${s.consistency}\n` +
-        `Runs: ${s.totalRuns}\n`
-      );
-      screen.render();
-      return;
-    }
-
+    const recent = [...runs].reverse().slice(-25);
+    const wpmSeries = recent.map((r) => r.netWpm);
+    const accSeries = recent.map((r) => r.accuracy);
     const modeCounts = new Map<string, number>();
     for (const run of runs) {
       modeCounts.set(run.mode, (modeCounts.get(run.mode) ?? 0) + 1);
     }
-    const modeLabels = [...modeCounts.keys()];
-    const modeData = modeLabels.map((m) => modeCounts.get(m) ?? 0);
-    const maxMode = modeData.length > 0 ? Math.max(...modeData) : 1;
+    const modeLines = [...modeCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([mode, count]) => `${mode.padEnd(8)} ${bar(count, Math.max(1, runs.length), 16)} ${count}`)
+      .join("\n");
 
-    const recentForTrend = [...runs].reverse().slice(-25);
-    const x = recentForTrend.map((_r, i) => String(i + 1));
-    const wpmY = recentForTrend.map((r) => round2(r.netWpm));
-    const accY = recentForTrend.map((r) => round2(r.accuracy));
+    const recentRows = runs.slice(0, 10)
+      .map((r, i) => `${String(i + 1).padStart(2, "0")}  ${r.mode.padEnd(7)} ${String(r.netWpm).padStart(6)}  ${String(r.accuracy).padStart(6)}%  ${formatRelativeTime(r.startedAt)}`)
+      .join("\n");
 
-    const trend = contrib.line({
-      parent: panel,
-      top: 0,
-      left: 0,
-      width: "66%",
-      height: "45%",
-      label: " Performance Trend (latest 25 runs) ",
-      xPadding: 2,
-      xLabelPadding: 1,
-      wholeNumbersOnly: false,
-      legend: { width: 10 },
-      style: { line: "cyan", text: "white", baseline: "gray" }
-    });
-    trend.setData([
-      { title: "WPM", x, y: wpmY, style: { line: "green" } },
-      { title: "ACC", x, y: accY, style: { line: "magenta" } }
-    ]);
-
-    const modes = contrib.bar({
-      parent: panel,
-      top: 0,
-      left: "66%",
-      width: "34%",
-      height: "45%",
-      label: " Mode Split ",
-      barWidth: 4,
-      barSpacing: 2,
-      xOffset: 0,
-      maxHeight: Math.max(3, maxMode),
-      barBgColor: "cyan",
-      barFgColor: "black"
-    });
-    modes.setData({
-      titles: modeLabels.length > 0 ? modeLabels.map((m) => m.slice(0, 6)) : ["none"],
-      data: modeData.length > 0 ? modeData : [0]
-    });
-
-    const avgAccuracy = contrib.gauge({
-      parent: panel,
-      top: "45%",
-      left: 0,
-      width: "33%",
-      height: "20%",
-      label: " Avg Accuracy ",
-      stroke: "magenta",
-      fill: "black"
-    } as never);
-    avgAccuracy.setPercent(Math.max(0, Math.min(100, Math.round(s.avgAccuracy))));
-
-    const consistency = contrib.gauge({
-      parent: panel,
-      top: "45%",
-      left: "33%",
-      width: "33%",
-      height: "20%",
-      label: " Consistency ",
-      stroke: "yellow",
-      fill: "black"
-    } as never);
-    consistency.setPercent(Math.max(0, Math.min(100, Math.round(s.consistency))));
-
-    const summary = blessed.box({
-      parent: panel,
-      top: "45%",
-      left: "66%",
-      width: "34%",
-      height: "20%",
-      border: "line",
-      tags: true,
-      style: { border: { fg: "cyan" }, fg: "white" },
-      content:
-        `{bold}{cyan-fg}90 Day Summary{/cyan-fg}{/bold}\n` +
-        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM\n` +
-        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM\n` +
-        `{magenta-fg}Runs{/magenta-fg}: ${s.totalRuns}`
-    });
-    panel.append(summary);
-
-    const rows = runs.slice(0, 10).map((r, i) => [
-      String(i + 1),
-      r.mode,
-      `${r.netWpm}`,
-      `${r.accuracy}%`,
-      formatRelativeTime(r.startedAt)
-    ]);
-    const table = contrib.table({
-      parent: panel,
-      top: "65%",
-      left: 0,
-      width: "100%",
-      height: "35%",
-      label: " Recent Runs ",
-      keys: false,
-      interactive: false as unknown as string,
-      fg: "white",
-      selectedFg: "white",
-      selectedBg: "black",
-      columnSpacing: 2,
-      columnWidth: [4, 12, 10, 10, 14]
-    });
-    table.setData({
-      headers: ["#", "Mode", "WPM", "ACC", "When"],
-      data: rows.length > 0 ? rows : [["-", "-", "-", "-", "-"]]
-    });
+    panel.setContent(
+      renderCard(
+        "90 Day Summary",
+        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM  ` +
+        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM  ` +
+        `{magenta-fg}Accuracy{/magenta-fg}: ${s.avgAccuracy}%  ` +
+        `{cyan-fg}Consistency{/cyan-fg}: ${s.consistency}  ` +
+        `Runs: ${s.totalRuns}`
+      ) +
+      "\n\n" +
+      renderSection("WPM Trend", `{green-fg}${sparkline(wpmSeries)}{/green-fg}`, THEME.ok) +
+      "\n" +
+      renderSection("ACC Trend", `{magenta-fg}${sparkline(accSeries)}{/magenta-fg}`, "magenta") +
+      "\n\n" +
+      renderSection("Mode Split", modeLines || "{gray-fg}No run data{/gray-fg}", THEME.brand) +
+      "\n\n" +
+      renderSection("Recent Runs", recentRows || "{gray-fg}No recent runs{/gray-fg}", THEME.text)
+    );
 
     screen.render();
   }
@@ -1057,6 +938,26 @@ function formatRelativeTime(iso: string): string {
   if (delta < 3600000) return `${Math.floor(delta / 60000)}m ago`;
   if (delta < 86400000) return `${Math.floor(delta / 3600000)}h ago`;
   return `${Math.floor(delta / 86400000)}d ago`;
+}
+
+function sparkline(values: number[]): string {
+  if (values.length === 0) return "no data";
+  const ticks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (max === min) return ticks[Math.floor(ticks.length / 2)].repeat(values.length);
+  return values
+    .map((v) => {
+      const idx = Math.max(0, Math.min(ticks.length - 1, Math.floor(((v - min) / (max - min)) * (ticks.length - 1))));
+      return ticks[idx];
+    })
+    .join("");
+}
+
+function bar(value: number, total: number, width: number): string {
+  const pct = total <= 0 ? 0 : value / total;
+  const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
+  return `[${"#".repeat(filled)}${"-".repeat(Math.max(0, width - filled))}]`;
 }
 
 function renderCard(title: string, body: string): string {
