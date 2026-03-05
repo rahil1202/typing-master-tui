@@ -68,4 +68,11 @@ export interface Settings {
   caretStyle: "block" | "line";
   strictMode: boolean;
   historyRetentionDays: number;
+  performanceMode: boolean;
+  reducedMotion: boolean;
+  toastLevel: "off" | "minimal" | "verbose";
+  inputStrategy: "auto" | "raw" | "keypress";
+  preferredTerminalHost: "auto" | "windows-terminal" | "powershell" | "iterm2" | "terminal-app" | "other";
+  onboardingCompleted: boolean;
+  diagnosticsEnabled: boolean;
 }

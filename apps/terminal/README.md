@@ -34,3 +34,13 @@ Local data is stored in:
 ## Requirements
 
 - Node.js 20+
+
+## Compatibility Matrix
+
+| Platform | Host Terminal | Status | Recommended input strategy |
+|---|---|---|---|
+| Windows | Windows Terminal + PowerShell | Supported | `raw` |
+| Windows | Legacy PowerShell host | Supported (reduced motion recommended) | `raw` |
+| macOS | iTerm2 | Supported | `keypress` |
+| macOS | Terminal.app | Supported | `keypress` |
+| Linux | GNOME/Konsole/Alacritty | Supported | `keypress` |

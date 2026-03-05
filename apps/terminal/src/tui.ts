@@ -6,10 +6,11 @@ import spinners from "cli-spinners";
 import gradient from "gradient-string";
 import stringWidth from "string-width";
 import { initLip, Lipgloss } from "charsm";
-import { getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
+import { composeAdaptiveDrill, getDifficultyConfig, getLessonsForDifficulty, makeWordTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
 import type { RunResult } from "./core/typingEngine.js";
 import { Storage, type TrainingProgress } from "./core/storage.js";
 import { TypingSession } from "./core/typingEngine.js";
+import { detectTerminalHost, DiagnosticsLogger, PerfTracker, runDoctor } from "./core/diagnostics.js";
 
 const THEME = {
   bg: "black",
@@ -27,7 +28,8 @@ const UI = {
   viewportChars: 210,
   liveTickerMs: 100,
   transitionInMs: 380,
-  transitionOutMs: 320
+  transitionOutMs: 320,
+  toastMs: 1400
 } as const;
 
 let lip: Lipgloss | null = null;
@@ -60,7 +62,7 @@ function ensureLipInit(): void {
   });
 }
 
-export function runTui(dbPath: string): void {
+export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   ensureLipInit();
   const storage = new Storage(dbPath);
   const profile = storage.getOrCreateProfile(os.userInfo().username || "Guest");
@@ -72,13 +74,12 @@ export function runTui(dbPath: string): void {
     settings = { ...settings, strictMode: false };
     storage.saveSettings(settings);
   }
-  if (settings.showKeyboard) {
-    settings = { ...settings, showKeyboard: false };
-    storage.saveSettings(settings);
-  }
 
   type GameLevel = "very-easy" | "easy" | "medium" | "hard" | "expert" | "insane";
   let selectedLevel: GameLevel = "easy";
+  const perf = new PerfTracker();
+  const logger = new DiagnosticsLogger(settings.diagnosticsEnabled);
+  const forcedPerfHud = Boolean(options?.perfHud);
 
   const getLevelProfile = (level: GameLevel): { difficulty: Difficulty; extraWords: number; label: string } => {
     switch (level) {
@@ -160,8 +161,23 @@ export function runTui(dbPath: string): void {
       item: { fg: THEME.text },
       selected: { bg: THEME.accent, fg: "black", bold: true }
     },
-    items: ["Practice Training", "Lessons", "Typing Test", "Custom Test", "Stats", "Game Level", "Toggle Sound", "Toggle Keyboard", "Quit"]
+    items: []
   });
+
+  const renderMenuItems = (): void => {
+    menu.setItems([
+      "Practice Training",
+      "Lessons",
+      "Typing Test",
+      "Custom Test",
+      "Stats",
+      "Coach Insights",
+      `Game Level (${selectedLevel.toUpperCase()})`,
+      `Toggle Sound (${settings.sound ? "ON" : "OFF"})`,
+      `Toggle Keyboard (${settings.showKeyboard ? "ON" : "OFF"})`,
+      "Quit"
+    ]);
+  };
 
   const panel = blessed.box({
     parent: screen,
@@ -185,6 +201,7 @@ export function runTui(dbPath: string): void {
     const children = [...panel.children];
     for (const child of children) child.destroy();
     panel.setScroll(0);
+    prevPanelContent = "";
     panel.setContent("");
   };
 
@@ -196,36 +213,95 @@ export function runTui(dbPath: string): void {
     height: 1,
     tags: true,
     style: { bg: THEME.bg, fg: THEME.muted },
-    content: " Enter select  ·  ESC back  ·  F3 sound  ·  F2 keyboard  ·  q quit "
+    content: "  ENTER Select    ESC Back    Ctrl+P Palette    F12 Reset    F3 Sound    F2 Keyboard    Q Quit  "
   });
+
+  const toast = blessed.box({
+    parent: screen,
+    bottom: 1,
+    left: "center",
+    width: "shrink",
+    height: 1,
+    tags: true,
+    hidden: true,
+    border: "line",
+    style: { bg: "black", fg: "yellow", bold: true, border: { fg: "yellow" } },
+    content: ""
+  });
+
+  const perfHud = blessed.box({
+    parent: screen,
+    top: 2,
+    right: 1,
+    width: 30,
+    height: 3,
+    tags: true,
+    hidden: !(forcedPerfHud || settings.performanceMode),
+    border: "line",
+    style: { border: { fg: THEME.borderSecondary }, fg: "white", bg: THEME.bg }
+  });
+
+  let toastTimer: NodeJS.Timeout | null = null;
+  let prevPanelContent = "";
+  let prevStatsContent = "";
+  let prevHeaderContent = "";
+
+  const setPanelContent = (next: string): void => {
+    if (next === prevPanelContent) return;
+    prevPanelContent = next;
+    panel.setContent(next);
+  };
+
+  const setHeaderContent = (next: string): void => {
+    if (next === prevHeaderContent) return;
+    prevHeaderContent = next;
+    header.setContent(next);
+  };
+
+  const setStatsContent = (next: string): void => {
+    if (next === prevStatsContent) return;
+    prevStatsContent = next;
+    statsBar.setContent(next);
+  };
+
+  const showToast = (message: string): void => {
+    if (settings.toastLevel === "off") return;
+    toast.setContent(` ${message} `);
+    toast.show();
+    screen.render();
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast.hide();
+      screen.render();
+    }, UI.toastMs);
+  };
 
   const renderHeader = (): void => {
     const logo = gradient(["#22d3ee", "#a78bfa"])("Typing Master");
     const raw = `${logo} · ${profile.nickname} · ${selectedLevel.toUpperCase()} · Flow Mode`;
     const cols = typeof screen.width === "number" ? screen.width : 120;
     const clipped = clipAnsiAware(raw, Math.max(20, cols - 2));
-    header.setContent(
-      ` ${clipped}`
-    );
+    setHeaderContent(` ${clipped}`);
   };
 
   const renderIdleStats = (): void => {
     const s = storage.getStats90d();
-    statsBar.setContent(
+    setStatsContent(
       ` {green-fg}Best ${s.bestWpm} WPM{/green-fg}  {yellow-fg}Avg ${s.avgWpm} WPM{/yellow-fg}  {magenta-fg}Accuracy ${s.avgAccuracy}%{/magenta-fg}  {cyan-fg}Runs ${s.totalRuns}{/cyan-fg}  Sound:${settings.sound ? "ON" : "OFF"}  Keyboard:${settings.showKeyboard ? "ON" : "OFF"}`
     );
   };
 
   const renderLiveStats = (wpm: number, accuracy: number, mistakes: number, progress: number): void => {
-    statsBar.setContent(
+    setStatsContent(
       ` {green-fg}${wpm} WPM{/green-fg}  {yellow-fg}${accuracy}% ACC{/yellow-fg}  {red-fg}${mistakes} ERR{/red-fg}  {cyan-fg}${progress}%{/cyan-fg}  {white-fg}${selectedLevel.toUpperCase()}{/white-fg}`
     );
   };
 
   const renderHome = (): void => {
     resetPanel();
+    renderMenuItems();
     panel.setLabel(" Session ");
-    panel.setContent(
+    setPanelContent(
       renderCard(
         "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}",
         "Minimal. Fast. Focused.\n\n" +
@@ -234,6 +310,7 @@ export function runTui(dbPath: string): void {
         "{white-fg}Output{/white-fg}: your typed stream with {green-fg}green{/green-fg}/{red-fg}red{/red-fg} feedback"
       )
     );
+    if (forcedPerfHud || settings.performanceMode) perfHud.show();
     renderHeader();
     renderIdleStats();
     menu.focus();
@@ -286,6 +363,53 @@ export function runTui(dbPath: string): void {
     }, spinners.dots.interval);
   };
 
+  const runOnboarding = (onDone: () => void): void => {
+    if (settings.onboardingCompleted) {
+      onDone();
+      return;
+    }
+    resetPanel();
+    menu.hide();
+    const report = runDoctor();
+    const recommendedInput = report.recommendedInputStrategy;
+    settings = {
+      ...settings,
+      inputStrategy: recommendedInput,
+      preferredTerminalHost: detectTerminalHost() as typeof settings.preferredTerminalHost,
+      reducedMotion: report.terminalHost === "powershell" ? true : settings.reducedMotion,
+      onboardingCompleted: true
+    };
+    storage.saveSettings(settings);
+    panel.setLabel(" Onboarding ");
+    setPanelContent(
+      renderCard(
+        "Welcome To Typing Master v1.0",
+        `{bold}{cyan-fg}Terminal Check{/cyan-fg}{/bold}\n` +
+        `Host: {yellow-fg}${report.terminalHost}{/yellow-fg}\n` +
+        `Input strategy: {green-fg}${recommendedInput}{/green-fg}\n` +
+        `Reduced motion: ${settings.reducedMotion ? "{green-fg}enabled{/green-fg}" : "{gray-fg}off{/gray-fg}"}\n` +
+        `${report.warnings.length > 0 ? `Warnings: {red-fg}${report.warnings.join(" | ")}{/red-fg}\n` : ""}\n` +
+        `{bold}{magenta-fg}Quick Keys{/magenta-fg}{/bold}\n` +
+        `Ctrl+P: command palette\n` +
+        `F12: panic reset\n` +
+        `F2/F3: keyboard/sound toggle\n\n` +
+        "{gray-fg}Press Enter to start{/gray-fg}"
+      )
+    );
+    panel.show();
+    footer.show();
+    statsBar.show();
+    panel.focus();
+    screen.render();
+    const done = (_ch?: string, key?: blessed.Widgets.Events.IKeyEventArg): void => {
+      if (key && key.name !== "enter" && key.name !== "return") return;
+      screen.off("keypress", done);
+      menu.show();
+      onDone();
+    };
+    screen.on("keypress", done);
+  };
+
   function runTypingMode(
     mode: "lesson" | "test" | "custom",
     text: string,
@@ -301,6 +425,7 @@ export function runTui(dbPath: string): void {
     let running = true;
     let dirty = true;
     let drawQueued = false;
+    let acceptingInput = false;
     const startedAt = Date.now();
     let lastSig = "";
     let lastSigAt = 0;
@@ -317,6 +442,7 @@ export function runTui(dbPath: string): void {
     const draw = (): void => {
       if (!running) return;
       if (!dirty) return;
+      const renderStart = perf.beginRender();
       const snap = session.snapshot;
       const elapsed = Math.max(1, Date.now() - startedAt);
       const live = computeLiveMetrics(snap.typed.length, snap.correctChars, snap.mistakes, elapsed);
@@ -324,7 +450,7 @@ export function runTui(dbPath: string): void {
       renderLiveStats(live.netWpm, live.accuracy, snap.mistakes, progress);
       const viewport = createViewport(text, snap.cursor, UI.viewportChars);
 
-      panel.setContent(
+      setPanelContent(
         renderSection("TARGET", renderTargetDiff(text, snap.typed, viewport), THEME.accent) +
         "\n\n" +
         renderSection("OUTPUT", renderTypedDiff(text, snap.typed, viewport), THEME.text) +
@@ -333,6 +459,13 @@ export function runTui(dbPath: string): void {
         `{gray-fg}ESC exit{/gray-fg}`
       );
       dirty = false;
+      perf.endRender(renderStart);
+      if (forcedPerfHud || settings.performanceMode) {
+        const p = perf.snapshot();
+        perfHud.show();
+        perfHud.setContent(`{bold}Perf{/bold}\nRender:${p.renderMs}ms\nLag:${p.inputLagMs}ms Drops:${p.droppedFrames}`);
+        if (p.renderMs > 20) logger.log("slow_render", { renderMs: p.renderMs, lagMs: p.inputLagMs, mode });
+      }
       screen.render();
     };
 
@@ -345,9 +478,9 @@ export function runTui(dbPath: string): void {
       renderHeader();
       renderIdleStats();
       cleanupInput();
-      void runExitTransition(panel, () => {
+      const finalize = (): void => {
       panel.setLabel(" Result ");
-      panel.setContent(
+      setPanelContent(
         lip
           ? lip.apply({
               value:
@@ -373,11 +506,15 @@ export function runTui(dbPath: string): void {
         const isDestroyed = Boolean((screen as unknown as { destroyed?: boolean }).destroyed);
         if (!isDestroyed) renderHome();
       }, 1500);
-      });
+      };
+      if (settings.reducedMotion) finalize();
+      else void runExitTransition(panel, finalize);
     };
 
     const onKeyEvent = (key: { name?: string; sequence?: string }): void => {
       if (!running) return;
+      if (!acceptingInput && key.name !== "escape" && key.name !== "f2" && key.name !== "f3") return;
+      perf.markInput();
       const sig = `${key.name ?? ""}|${key.sequence ?? ""}`;
       const now = Date.now();
       if (sig === lastSig && now - lastSigAt < 20) return;
@@ -393,7 +530,10 @@ export function runTui(dbPath: string): void {
       if (key.name === "f3") {
         settings = { ...settings, sound: !settings.sound };
         storage.saveSettings(settings);
+        renderMenuItems();
         renderHeader();
+        renderIdleStats();
+        showToast(`Sound ${settings.sound ? "ON" : "OFF"}`);
         dirty = true;
         queueDraw();
         return;
@@ -401,7 +541,10 @@ export function runTui(dbPath: string): void {
       if (key.name === "f2") {
         settings = { ...settings, showKeyboard: !settings.showKeyboard };
         storage.saveSettings(settings);
+        renderMenuItems();
         renderHeader();
+        renderIdleStats();
+        showToast(`Keyboard ${settings.showKeyboard ? "ON" : "OFF"}`);
         dirty = true;
         queueDraw();
         return;
@@ -416,7 +559,10 @@ export function runTui(dbPath: string): void {
         session.applyKey(printable);
         const correct = printable === text[idx];
         lastKeyPress = { label: normalizeKeyLabel(printable), correct, at: Date.now() };
-        if (settings.sound && !correct) playWrongSound();
+        if (!correct) {
+          if (settings.sound) playWrongSound();
+          logger.log("wrong_key", { expected: text[idx] ?? "", actual: printable, cursor: idx });
+        }
       } else {
         return;
       }
@@ -426,12 +572,20 @@ export function runTui(dbPath: string): void {
       if (session.snapshot.done) finish();
     };
 
+    const useRawWindowsInput = process.platform === "win32" && (settings.inputStrategy === "raw" || settings.inputStrategy === "auto");
+
     const keypressHandler = (_ch: string, key: blessed.Widgets.Events.IKeyEventArg): void => {
+      // On Windows raw-mode strategy consumes printable chars to avoid duplicate streams.
+      if (useRawWindowsInput) {
+        const isPrintable = typeof key.sequence === "string" && key.sequence.length === 1 && key.name !== "escape";
+        const isEditingKey = key.name === "backspace" || key.name === "delete" || key.name === "space";
+        if (isPrintable || isEditingKey) return;
+      }
       onKeyEvent({ name: key.name, sequence: key.sequence as string | undefined });
     };
 
     let rawDataHandler: ((buf: Buffer) => void) | null = null;
-    if (process.platform === "win32") {
+    if (useRawWindowsInput) {
       rawDataHandler = (buf: Buffer): void => {
         if (!running) return;
         const raw = buf.toString("utf8");
@@ -458,8 +612,9 @@ export function runTui(dbPath: string): void {
     screen.on("keypress", keypressHandler);
     panel.focus();
     if (settings.sound) playStartSound();
-    void runStartTransition(panel, mode).then(() => {
+    const beginRun = (): void => {
       if (!running) return;
+      acceptingInput = true;
       const liveTicker = setInterval(() => {
         if (!running) {
           clearInterval(liveTicker);
@@ -471,7 +626,9 @@ export function runTui(dbPath: string): void {
       }, UI.liveTickerMs);
       dirty = true;
       queueDraw();
-    });
+    };
+    if (settings.reducedMotion) beginRun();
+    else void runStartTransition(panel, mode).then(beginRun);
   }
 
   function showLessons(): void {
@@ -544,6 +701,7 @@ export function runTui(dbPath: string): void {
       progress.tier === "cadet" ? 350 :
       progress.tier === "pro" ? 700 :
       progress.tier === "elite" ? 1100 : progress.points;
+    const coach = storage.getCoachInsights(50);
 
     panel.setLabel(" Practice Training ");
 
@@ -575,6 +733,7 @@ export function runTui(dbPath: string): void {
       style: { selected: { bg: "green", fg: "black", bold: true } },
       items: [
         "Start Guided Drill",
+        "Start Adaptive Drill",
         "Back to Home"
       ]
     });
@@ -588,6 +747,7 @@ export function runTui(dbPath: string): void {
         (progress.tier !== "master" ? ` / ${nextTierAt}` : " (MAX)") +
         `\nCompleted Drills: ${progress.completedDrills}\n` +
         `Best WPM: ${progress.bestWpm}\nBest Accuracy: ${progress.bestAccuracy}%\n\n` +
+        `Milestone Gate: ${coach.consistency >= 70 && progress.bestAccuracy >= 95 ? "{green-fg}PASS{/green-fg}" : "{red-fg}PENDING{/red-fg}"}\n` +
         `Next Drill: ${lesson ? `${lesson.title} [${lesson.level}]` : "No lesson available"}\n` +
         `Goal: Build from 0 to Master with consistency.`;
       summaryBox.setContent(summaryText);
@@ -603,6 +763,14 @@ export function runTui(dbPath: string): void {
         }
         actions.destroy();
         runTypingMode("lesson", lesson.text, `training-${lesson.id}-${Date.now()}`, lesson.level, (result) => {
+          storage.recordTrainingRun(result);
+        });
+        return;
+      }
+      if (idx === 1) {
+        const adaptive = composeAdaptiveDrill(coach.weakestKeys, coach.weakestBigrams, 65);
+        actions.destroy();
+        runTypingMode("custom", adaptive, `adaptive-${Date.now()}`, targetDifficulty, (result) => {
           storage.recordTrainingRun(result);
         });
         return;
@@ -653,7 +821,7 @@ export function runTui(dbPath: string): void {
       renderHeader();
       renderIdleStats();
       panel.setLabel(" Session ");
-      panel.setContent(`Level set to {bold}{cyan-fg}${selectedLevel.toUpperCase()}{/cyan-fg}{/bold}.`);
+      setPanelContent(`Level set to {bold}{cyan-fg}${selectedLevel.toUpperCase()}{/cyan-fg}{/bold}.`);
       screen.render();
     };
 
@@ -688,7 +856,7 @@ export function runTui(dbPath: string): void {
       .map((r, i) => `${String(i + 1).padStart(2, "0")}  ${r.mode.padEnd(7)} ${String(r.netWpm).padStart(6)}  ${String(r.accuracy).padStart(6)}%  ${formatRelativeTime(r.startedAt)}`)
       .join("\n");
 
-    panel.setContent(
+    setPanelContent(
       renderCard(
         "90 Day Summary",
         `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM  ` +
@@ -710,6 +878,31 @@ export function runTui(dbPath: string): void {
     screen.render();
   }
 
+  function showCoachInsights(): void {
+    resetPanel();
+    panel.setLabel(" Coach Insights ");
+    const coach = storage.getCoachInsights(50);
+    const keys = coach.weakestKeys.length > 0
+      ? coach.weakestKeys.map((k) => `${k.key}:${k.count}`).join(", ")
+      : "No key mistake data yet";
+    const bigrams = coach.weakestBigrams.length > 0
+      ? coach.weakestBigrams.map((k) => `${k.bigram}:${k.count}`).join(", ")
+      : "No bigram mistake data yet";
+    setPanelContent(
+      renderCard(
+        "Coach",
+        `Runs analyzed: ${coach.runsAnalyzed}\n` +
+        `Consistency: ${coach.consistency}\n` +
+        `Fatigue score: ${coach.fatigueScore}\n` +
+        `Daily target: ${coach.dailyTarget}\n\n` +
+        `Weakest keys: ${keys}\n` +
+        `Weakest bigrams: ${bigrams}\n\n` +
+        "{gray-fg}Tip: Use Practice Training -> Adaptive Drill{/gray-fg}"
+      )
+    );
+    screen.render();
+  }
+
   const onMenuPick = (idx: number): void => {
     switch (idx) {
       case 0:
@@ -728,20 +921,27 @@ export function runTui(dbPath: string): void {
         showStats();
         break;
       case 5:
-        showDifficultyPicker();
+        showCoachInsights();
         break;
       case 6:
-        settings = { ...settings, sound: !settings.sound };
-        storage.saveSettings(settings);
-        renderHeader();
-        renderIdleStats();
-        screen.render();
+        showDifficultyPicker();
         break;
       case 7:
-        settings = { ...settings, showKeyboard: !settings.showKeyboard };
+        settings = { ...settings, sound: !settings.sound };
         storage.saveSettings(settings);
+        renderMenuItems();
         renderHeader();
         renderIdleStats();
+        showToast(`Sound ${settings.sound ? "ON" : "OFF"}`);
+        screen.render();
+        break;
+      case 8:
+        settings = { ...settings, showKeyboard: !settings.showKeyboard };
+        storage.saveSettings(settings);
+        renderMenuItems();
+        renderHeader();
+        renderIdleStats();
+        showToast(`Keyboard ${settings.showKeyboard ? "ON" : "OFF"}`);
         screen.render();
         break;
       default:
@@ -749,6 +949,103 @@ export function runTui(dbPath: string): void {
         screen.destroy();
         process.exit(0);
     }
+  };
+
+  const openCommandPalette = (): void => {
+    const overlay = blessed.box({
+      parent: screen,
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: "100%",
+      style: { bg: "black" }
+    });
+    const title = blessed.box({
+      parent: screen,
+      top: "30%",
+      left: "center",
+      width: "56%",
+      height: 2,
+      tags: true,
+      align: "center",
+      content: `{bold}{cyan-fg}Command Palette{/cyan-fg}{/bold}  {gray-fg}(quick actions){/gray-fg}`
+    });
+    const palette = blessed.list({
+      parent: screen,
+      top: "35%",
+      left: "center",
+      width: "56%",
+      height: 11,
+      border: "line",
+      label: " Actions ",
+      keys: true,
+      vi: true,
+      mouse: true,
+      style: {
+        border: { fg: "magenta" },
+        item: { fg: "white" },
+        selected: { bg: "yellow", fg: "black", bold: true }
+      },
+      items: [
+        "Training: Open Practice",
+        "Coach: Open Insights",
+        "Stats: Open Dashboard",
+        "System: Toggle Performance Mode",
+        "Audio: Toggle Sound",
+        "Visual: Toggle Keyboard",
+        "System: Run Doctor",
+        "Close Palette"
+      ]
+    });
+    const hint = blessed.box({
+      parent: screen,
+      top: "78%",
+      left: "center",
+      width: "56%",
+      height: 1,
+      tags: true,
+      align: "center",
+      content: "{gray-fg}Enter select · Esc close · ↑/↓ navigate{/gray-fg}"
+    });
+    palette.focus();
+    const close = (): void => {
+      hint.destroy();
+      title.destroy();
+      palette.destroy();
+      overlay.destroy();
+      menu.focus();
+      screen.render();
+    };
+    const pick = (idx: number): void => {
+      if (idx === 0) onMenuPick(0);
+      else if (idx === 1) onMenuPick(5);
+      else if (idx === 2) onMenuPick(4);
+      else if (idx === 3) {
+        settings = { ...settings, performanceMode: !settings.performanceMode };
+        storage.saveSettings(settings);
+        if (settings.performanceMode || forcedPerfHud) perfHud.show(); else perfHud.hide();
+        showToast(`Performance mode ${settings.performanceMode ? "ON" : "OFF"}`);
+      } else if (idx === 4) onMenuPick(7);
+      else if (idx === 5) onMenuPick(8);
+      else if (idx === 6) {
+        const report = runDoctor();
+        showToast(`Doctor: ${report.terminalHost}, input ${report.recommendedInputStrategy}`);
+      }
+      close();
+    };
+    palette.on("select", (_item, idx) => pick(idx));
+    palette.key(["escape"], close);
+    screen.render();
+  };
+
+  const panicReset = (): void => {
+    resetPanel();
+    toast.hide();
+    renderHeader();
+    renderIdleStats();
+    renderHome();
+    logger.log("panic_reset", { reason: "manual_f12" });
+    showToast("UI reset complete");
   };
 
   menu.on("select", (_item, idx) => onMenuPick(idx));
@@ -776,24 +1073,40 @@ export function runTui(dbPath: string): void {
   screen.key(["f3"], () => {
     settings = { ...settings, sound: !settings.sound };
     storage.saveSettings(settings);
+    renderMenuItems();
     renderHeader();
     renderIdleStats();
+    showToast(`Sound ${settings.sound ? "ON" : "OFF"}`);
     screen.render();
+  });
+
+  screen.key(["C-p"], () => {
+    openCommandPalette();
+  });
+
+  screen.key(["f12"], () => {
+    panicReset();
   });
 
   screen.key(["f2"], () => {
     settings = { ...settings, showKeyboard: !settings.showKeyboard };
     storage.saveSettings(settings);
+    renderMenuItems();
     renderHeader();
     renderIdleStats();
+    showToast(`Keyboard ${settings.showKeyboard ? "ON" : "OFF"}`);
     screen.render();
   });
 
   renderHeader();
+  renderMenuItems();
   renderIdleStats();
   renderStartupSplash(() => {
-    menu.focus();
-    renderHome();
+    runOnboarding(() => {
+      menu.focus();
+      renderHome();
+      logger.log("app_ready", { host: detectTerminalHost(), perfHud: forcedPerfHud || settings.performanceMode });
+    });
   });
 }
 

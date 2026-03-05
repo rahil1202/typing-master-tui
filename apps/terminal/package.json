@@ -41,7 +41,10 @@
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run clean && npm run build",
-    "publish:check": "npm pack --dry-run"
+    "publish:check": "npm pack --dry-run",
+    "build:standalone": "pkg dist/index.js --targets node20-win-x64,node20-macos-x64,node20-linux-x64 --output dist/typing-master",
+    "checksums": "node -e \"const fs=require('fs');const crypto=require('crypto');const p='dist';const out=[];for(const f of fs.readdirSync(p)){const fp=p+'/'+f;if(fs.statSync(fp).isFile()){const h=crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex');out.push(h+'  '+f)}}fs.writeFileSync(p+'/checksums.txt',out.join('\\n'))\"",
+    "release:artifacts": "npm run build && npm run build:standalone && npm run checksums"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
@@ -61,6 +64,8 @@
     "@types/blessed": "^0.1.25",
     "@types/react": "^19.2.14",
     "@types/ws": "^8.5.14"
+    ,
+    "pkg": "^5.8.1"
   },
   "engines": {
     "node": ">=20"

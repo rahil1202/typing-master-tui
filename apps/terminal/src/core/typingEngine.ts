@@ -21,6 +21,8 @@ export interface RunResult {
   mistakes: number;
   textId: string;
   inputTraceHash: string;
+  keyMistakes?: Record<string, number>;
+  bigramMistakes?: Record<string, number>;
 }
 
 export interface SessionSnapshot {
@@ -107,8 +109,29 @@ export class TypingSession {
       cpm,
       mistakes: this.mistakes,
       textId,
-      inputTraceHash: crypto.createHash("sha256").update(payload).digest("hex")
+      inputTraceHash: crypto.createHash("sha256").update(payload).digest("hex"),
+      keyMistakes: this.getMistakeHeatmap(),
+      bigramMistakes: this.getBigramMistakes()
     };
+  }
+
+  getMistakeHeatmap(): Record<string, number> {
+    const map: Record<string, number> = {};
+    for (const e of this.events) {
+      if (!e.correct) map[e.expected] = (map[e.expected] ?? 0) + 1;
+    }
+    return map;
+  }
+
+  getBigramMistakes(): Record<string, number> {
+    const map: Record<string, number> = {};
+    for (const e of this.events) {
+      if (!e.correct && e.index > 0) {
+        const bigram = `${this.target[e.index - 1] ?? ""}${e.expected}`;
+        map[bigram] = (map[bigram] ?? 0) + 1;
+      }
+    }
+    return map;
   }
 }
 

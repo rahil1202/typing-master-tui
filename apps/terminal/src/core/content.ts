@@ -120,3 +120,29 @@ export function normalizeCustomText(input: string, opts?: { punctuation?: boolea
   if (!opts?.caseSensitive) v = v.toLowerCase();
   return v.replace(/\s+/g, " ").trim();
 }
+
+export function composeAdaptiveDrill(
+  keyMistakes: Array<{ key: string; count: number }>,
+  bigramMistakes: Array<{ bigram: string; count: number }>,
+  size = 70
+): string {
+  const units: string[] = [];
+  for (const k of keyMistakes.slice(0, 5)) {
+    const safe = normalizeCustomText(k.key, { punctuation: true, numbers: true, caseSensitive: true }) || "a";
+    for (let i = 0; i < Math.max(2, Math.min(8, k.count)); i++) units.push(safe);
+  }
+  for (const b of bigramMistakes.slice(0, 5)) {
+    const safe = normalizeCustomText(b.bigram, { punctuation: true, numbers: true, caseSensitive: true }) || "th";
+    for (let i = 0; i < Math.max(2, Math.min(8, b.count)); i++) units.push(safe);
+  }
+  if (units.length === 0) return makeWordTest(size, Math.floor(Date.now() / 1000));
+  const words: string[] = [];
+  let seed = Date.now() % 2147483647;
+  for (let i = 0; i < size; i++) {
+    seed = (seed * 48271) % 2147483647;
+    const u = units[seed % units.length];
+    const w = WORDS[seed % WORDS.length];
+    words.push(i % 3 === 0 ? `${u}${w.slice(0, 2)}` : i % 5 === 0 ? `${w}${u}` : u.length >= 2 ? u : `${u}${w[0]}`);
+  }
+  return words.join(" ");
+}

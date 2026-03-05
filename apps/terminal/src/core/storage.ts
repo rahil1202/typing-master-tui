@@ -21,6 +21,15 @@ export interface TrainingProgress {
   lastTrainedAt: string | null;
 }
 
+export interface CoachInsights {
+  runsAnalyzed: number;
+  weakestKeys: Array<{ key: string; count: number }>;
+  weakestBigrams: Array<{ bigram: string; count: number }>;
+  fatigueScore: number;
+  dailyTarget: string;
+  consistency: number;
+}
+
 const DEFAULT_SETTINGS: Settings = {
   theme: "default",
   sound: true,
@@ -28,7 +37,14 @@ const DEFAULT_SETTINGS: Settings = {
   keyAnimation: true,
   caretStyle: "line",
   strictMode: true,
-  historyRetentionDays: 90
+  historyRetentionDays: 90,
+  performanceMode: false,
+  reducedMotion: false,
+  toastLevel: "minimal",
+  inputStrategy: "auto",
+  preferredTerminalHost: "auto",
+  onboardingCompleted: false,
+  diagnosticsEnabled: false
 };
 
 const DEFAULT_TRAINING: TrainingProgress = {
@@ -71,7 +87,9 @@ export class Storage {
         cpm REAL NOT NULL,
         mistakes INTEGER NOT NULL,
         text_id TEXT NOT NULL,
-        input_trace_hash TEXT NOT NULL
+        input_trace_hash TEXT NOT NULL,
+        key_mistakes_json TEXT,
+        bigram_mistakes_json TEXT
       );
       CREATE TABLE IF NOT EXISTS training_progress (
         id INTEGER PRIMARY KEY CHECK (id=1),
@@ -86,6 +104,14 @@ export class Storage {
     if (!training) {
       this.db.prepare("INSERT INTO training_progress(id, json) VALUES (1, ?)").run(JSON.stringify(DEFAULT_TRAINING));
     }
+    this.ensureRunColumn("key_mistakes_json", "TEXT");
+    this.ensureRunColumn("bigram_mistakes_json", "TEXT");
+  }
+
+  private ensureRunColumn(column: string, type: string): void {
+    const cols = this.db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === column)) return;
+    this.db.exec(`ALTER TABLE runs ADD COLUMN ${column} ${type}`);
   }
 
   getOrCreateProfile(nickname = "Guest"): Profile {
@@ -137,9 +163,13 @@ export class Storage {
 
   addRun(run: RunResult): void {
     this.db.prepare(`
-      INSERT INTO runs(mode, started_at, duration_ms, gross_wpm, net_wpm, accuracy, cpm, mistakes, text_id, input_trace_hash)
-      VALUES (@mode, @startedAt, @durationMs, @grossWpm, @netWpm, @accuracy, @cpm, @mistakes, @textId, @inputTraceHash)
-    `).run(run as unknown as Record<string, unknown>);
+      INSERT INTO runs(mode, started_at, duration_ms, gross_wpm, net_wpm, accuracy, cpm, mistakes, text_id, input_trace_hash, key_mistakes_json, bigram_mistakes_json)
+      VALUES (@mode, @startedAt, @durationMs, @grossWpm, @netWpm, @accuracy, @cpm, @mistakes, @textId, @inputTraceHash, @keyMistakesJson, @bigramMistakesJson)
+    `).run({
+      ...run,
+      keyMistakesJson: run.keyMistakes ? JSON.stringify(run.keyMistakes) : null,
+      bigramMistakesJson: run.bigramMistakes ? JSON.stringify(run.bigramMistakes) : null
+    } as Record<string, unknown>);
   }
 
   pruneHistory(retentionDays = this.getSettings().historyRetentionDays): number {
@@ -151,9 +181,78 @@ export class Storage {
   getRuns(limit = 200): RunResult[] {
     return this.db.prepare(`
       SELECT mode, started_at as startedAt, duration_ms as durationMs, gross_wpm as grossWpm,
-             net_wpm as netWpm, accuracy, cpm, mistakes, text_id as textId, input_trace_hash as inputTraceHash
+             net_wpm as netWpm, accuracy, cpm, mistakes, text_id as textId, input_trace_hash as inputTraceHash,
+             key_mistakes_json as keyMistakesJson, bigram_mistakes_json as bigramMistakesJson
       FROM runs ORDER BY started_at DESC LIMIT ?
-    `).all(limit) as RunResult[];
+    `).all(limit).map((row) => {
+      const r = row as Record<string, unknown>;
+      return {
+        mode: r.mode as RunResult["mode"],
+        startedAt: r.startedAt as string,
+        durationMs: r.durationMs as number,
+        grossWpm: r.grossWpm as number,
+        netWpm: r.netWpm as number,
+        accuracy: r.accuracy as number,
+        cpm: r.cpm as number,
+        mistakes: r.mistakes as number,
+        textId: r.textId as string,
+        inputTraceHash: r.inputTraceHash as string,
+        keyMistakes: safeJsonRecord(r.keyMistakesJson),
+        bigramMistakes: safeJsonRecord(r.bigramMistakesJson)
+      } satisfies RunResult;
+    });
+  }
+
+  getCoachInsights(limit = 50): CoachInsights {
+    const runs = this.getRuns(limit);
+    if (runs.length === 0) {
+      return {
+        runsAnalyzed: 0,
+        weakestKeys: [],
+        weakestBigrams: [],
+        fatigueScore: 0,
+        dailyTarget: "Complete 3 clean runs at 95%+ accuracy.",
+        consistency: 0
+      };
+    }
+    const keyTotals = new Map<string, number>();
+    const bigramTotals = new Map<string, number>();
+    for (const run of runs) {
+      for (const [k, v] of Object.entries(run.keyMistakes ?? {})) {
+        keyTotals.set(k, (keyTotals.get(k) ?? 0) + v);
+      }
+      for (const [k, v] of Object.entries(run.bigramMistakes ?? {})) {
+        bigramTotals.set(k, (bigramTotals.get(k) ?? 0) + v);
+      }
+    }
+    const weakestKeys = [...keyTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([key, count]) => ({ key, count }));
+    const weakestBigrams = [...bigramTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([bigram, count]) => ({ bigram, count }));
+    const avgAcc = runs.reduce((acc, r) => acc + r.accuracy, 0) / runs.length;
+    const avgWpm = runs.reduce((acc, r) => acc + r.netWpm, 0) / runs.length;
+    const recent = runs.slice(0, 10);
+    const old = runs.slice(10, 20);
+    const recentAcc = recent.length ? recent.reduce((a, b) => a + b.accuracy, 0) / recent.length : avgAcc;
+    const oldAcc = old.length ? old.reduce((a, b) => a + b.accuracy, 0) / old.length : avgAcc;
+    const fatigue = round2(Math.max(0, oldAcc - recentAcc));
+    const consistency = this.getStats90d().consistency;
+    return {
+      runsAnalyzed: runs.length,
+      weakestKeys,
+      weakestBigrams,
+      fatigueScore: fatigue,
+      dailyTarget: avgAcc < 95
+        ? "Reach 95% accuracy for 5 consecutive runs."
+        : avgWpm < 60
+          ? "Add +5 WPM while staying above 95% accuracy."
+          : "Maintain 97%+ accuracy and improve consistency by 5 points.",
+      consistency
+    };
   }
 
   getStats90d(): {
@@ -182,9 +281,10 @@ export class Storage {
   exportRuns(format: "json" | "csv"): string {
     const runs = this.getRuns(5000);
     if (format === "json") return JSON.stringify(runs, null, 2);
-    const header = "mode,startedAt,durationMs,grossWpm,netWpm,accuracy,cpm,mistakes,textId,inputTraceHash";
+    const header = "mode,startedAt,durationMs,grossWpm,netWpm,accuracy,cpm,mistakes,textId,inputTraceHash,keyMistakes,bigramMistakes";
     const lines = runs.map((r) => [
-      r.mode, r.startedAt, r.durationMs, r.grossWpm, r.netWpm, r.accuracy, r.cpm, r.mistakes, r.textId, r.inputTraceHash
+      r.mode, r.startedAt, r.durationMs, r.grossWpm, r.netWpm, r.accuracy, r.cpm, r.mistakes, r.textId, r.inputTraceHash,
+      JSON.stringify(r.keyMistakes ?? {}), JSON.stringify(r.bigramMistakes ?? {})
     ].join(","));
     return [header, ...lines].join("\n");
   }
@@ -200,6 +300,20 @@ export class Storage {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function safeJsonRecord(value: unknown): Record<string, number> | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
 }
 
 function tierFromPoints(points: number): TrainingTier {
