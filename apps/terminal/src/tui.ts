@@ -1142,12 +1142,15 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     showToast("UI reset complete");
   };
 
-  menu.on("select", (_item, idx) => onMenuPick(idx));
-  menu.on("action", (_item, idx) => onMenuPick(idx));
-  menu.on("click", () => {
-    const selected = (menu as unknown as { selected?: number }).selected;
-    onMenuPick(typeof selected === "number" ? selected : 0);
-  });
+  let lastMenuPick = { idx: -1, at: 0 };
+  const triggerMenuPick = (idx: number): void => {
+    const now = Date.now();
+    if (lastMenuPick.idx === idx && now - lastMenuPick.at < 120) return;
+    lastMenuPick = { idx, at: now };
+    onMenuPick(idx);
+  };
+  menu.on("select", (_item, idx) => triggerMenuPick(idx));
+  menu.on("action", (_item, idx) => triggerMenuPick(idx));
 
   panel.on("wheelup", () => {
     panel.scroll(-2);
