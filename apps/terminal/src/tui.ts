@@ -1,4 +1,5 @@
 import blessed from "blessed";
+import contrib from "@blessed/blessed-contrib";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
@@ -87,10 +88,19 @@ export function runTui(dbPath: string): void {
 
   try {
     screen.program.enableMouse();
-    screen.program.setMouse(
-      { allMotion: true, vt200Mouse: true, x10Mouse: true, sgrMouse: true, sendFocus: true },
-      true
-    );
+    // PowerShell/Windows can flood with mouse-motion events, causing lag.
+    // Keep click/scroll support but avoid all-motion tracking there.
+    if (process.platform === "win32") {
+      screen.program.setMouse(
+        { allMotion: false, vt200Mouse: true, x10Mouse: true, sgrMouse: true, sendFocus: false },
+        true
+      );
+    } else {
+      screen.program.setMouse(
+        { allMotion: true, vt200Mouse: true, x10Mouse: true, sgrMouse: true, sendFocus: true },
+        true
+      );
+    }
   } catch {
     // Keep app usable even when host terminal mouse tracking is limited.
   }
@@ -102,7 +112,7 @@ export function runTui(dbPath: string): void {
     width: "100%",
     height: 1,
     tags: true,
-    style: { bg: "blue", fg: "white" }
+    style: { bg: "black", fg: "cyan", bold: true }
   });
 
   const statsBar = blessed.box({
@@ -128,9 +138,9 @@ export function runTui(dbPath: string): void {
     vi: true,
     mouse: true,
     style: {
-      border: { fg: "cyan" },
+      border: { fg: "magenta" },
       item: { fg: "white" },
-      selected: { bg: "cyan", fg: "black", bold: true }
+      selected: { bg: "yellow", fg: "black", bold: true }
     },
     items: ["Practice Training", "Lessons", "Typing Test", "Custom Test", "Stats", "Game Level", "Toggle Sound", "Toggle Keyboard", "Quit"]
   });
@@ -150,8 +160,15 @@ export function runTui(dbPath: string): void {
     keys: true,
     vi: true,
     style: { border: { fg: "cyan" }, fg: "white", bg: "black" },
-    scrollbar: { ch: " ", style: { bg: "cyan" } }
+    scrollbar: { ch: " ", style: { bg: "magenta" } }
   });
+
+  const resetPanel = (): void => {
+    const children = [...panel.children];
+    for (const child of children) child.destroy();
+    panel.setScroll(0);
+    panel.setContent("");
+  };
 
   const footer = blessed.box({
     parent: screen,
@@ -160,7 +177,7 @@ export function runTui(dbPath: string): void {
     width: "100%",
     height: 1,
     tags: true,
-    style: { bg: "blue", fg: "white" },
+    style: { bg: "black", fg: "gray" },
     content: " Enter select  ·  ESC back  ·  F3 sound  ·  F2 keyboard  ·  q quit "
   });
 
@@ -188,13 +205,14 @@ export function runTui(dbPath: string): void {
   };
 
   const renderHome = (): void => {
+    resetPanel();
     panel.setLabel(" Session ");
-    panel.setScroll(0);
     panel.setContent(
-      "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}\n\n" +
-      "Select a mode on the left.\n\n" +
-      "{yellow-fg}Target text{/yellow-fg} stays warm yellow.\n" +
-      "Typed output turns {green-fg}green{/green-fg} for correct and {red-fg}red{/red-fg} for wrong."
+      "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}\n" +
+      "{gray-fg}Minimal. Fast. Focused.{/gray-fg}\n\n" +
+      "{white-fg}Pick a mode from the left menu.{/white-fg}\n\n" +
+      "{yellow-fg}Target{/yellow-fg}: upcoming text\n" +
+      "{white-fg}Output{/white-fg}: your typed stream with {green-fg}green{/green-fg}/{red-fg}red{/red-fg} feedback"
     );
     renderHeader();
     renderIdleStats();
@@ -255,16 +273,26 @@ export function runTui(dbPath: string): void {
     difficulty: Difficulty,
     onComplete?: (result: RunResult) => void
   ): void {
+    resetPanel();
     panel.setLabel(` ${mode.toUpperCase()} `);
-    panel.setScroll(0);
 
     const session = new TypingSession(text, false);
     let lastKeyPress: { label: string; correct: boolean; at: number } | null = null;
     let running = true;
     let dirty = true;
+    let drawQueued = false;
     const startedAt = Date.now();
     let lastSig = "";
     let lastSigAt = 0;
+
+    const queueDraw = (): void => {
+      if (!running || drawQueued) return;
+      drawQueued = true;
+      setTimeout(() => {
+        drawQueued = false;
+        draw();
+      }, 0);
+    };
 
     const draw = (): void => {
       if (!running) return;
@@ -274,10 +302,11 @@ export function runTui(dbPath: string): void {
       const live = computeLiveMetrics(snap.typed.length, snap.correctChars, snap.mistakes, elapsed);
       const progress = Math.floor((snap.cursor / Math.max(1, text.length)) * 100);
       renderLiveStats(live.netWpm, live.accuracy, snap.mistakes, progress);
+      const viewport = createViewport(text, snap.cursor, 210);
 
       panel.setContent(
-        `{bold}{yellow-fg}Target{/yellow-fg}{/bold}\n${renderTargetDiff(text, snap.typed)}\n\n` +
-        `{bold}{white-fg}Output{/white-fg}{/bold}\n${renderTypedDiff(text, snap.typed)}\n\n` +
+        `{bold}{yellow-fg}TARGET{/yellow-fg}{/bold}\n${renderTargetDiff(text, snap.typed, viewport)}\n\n` +
+        `{bold}{white-fg}OUTPUT{/white-fg}{/bold}\n${renderTypedDiff(text, snap.typed, viewport)}\n\n` +
         (settings.showKeyboard ? `{bold}Keyboard{/bold}\n${renderKeyboard(lastKeyPress, settings.keyAnimation)}\n\n` : "") +
         `{gray-fg}ESC exit{/gray-fg}`
       );
@@ -342,7 +371,7 @@ export function runTui(dbPath: string): void {
         storage.saveSettings(settings);
         renderHeader();
         dirty = true;
-        draw();
+        queueDraw();
         return;
       }
       if (key.name === "f2") {
@@ -350,7 +379,7 @@ export function runTui(dbPath: string): void {
         storage.saveSettings(settings);
         renderHeader();
         dirty = true;
-        draw();
+        queueDraw();
         return;
       }
 
@@ -369,7 +398,7 @@ export function runTui(dbPath: string): void {
       }
 
       dirty = true;
-      draw();
+      queueDraw();
       if (session.snapshot.done) finish();
     };
 
@@ -406,22 +435,24 @@ export function runTui(dbPath: string): void {
     panel.focus();
     if (settings.sound) playStartSound();
 
-    const paintLoop = setInterval(() => {
+    const liveTicker = setInterval(() => {
       if (!running) {
-        clearInterval(paintLoop);
+        clearInterval(liveTicker);
         return;
       }
+      // Keep stats/progress moving smoothly without 60fps full re-render.
+      dirty = true;
       draw();
-    }, 16);
+    }, 125);
 
     dirty = true;
-    draw();
+    queueDraw();
   }
 
   function showLessons(): void {
+    resetPanel();
     const lessons = getLessonsForDifficulty(getLevelProfile(selectedLevel).difficulty);
     panel.setLabel(" Lessons ");
-    panel.setScroll(0);
     const chooser = blessed.list({
       parent: panel,
       width: "100%",
@@ -478,6 +509,7 @@ export function runTui(dbPath: string): void {
   }
 
   function showPracticeTraining(): void {
+    resetPanel();
     const progress = storage.getTrainingProgress();
     const targetDifficulty = trainingTierToDifficulty(progress.tier);
     const pool = getLessonsForDifficulty(targetDifficulty);
@@ -489,7 +521,6 @@ export function runTui(dbPath: string): void {
       progress.tier === "elite" ? 1100 : progress.points;
 
     panel.setLabel(" Practice Training ");
-    panel.setScroll(0);
 
     const summaryBox = blessed.box({
       parent: panel,
@@ -566,8 +597,8 @@ export function runTui(dbPath: string): void {
   }
 
   function showDifficultyPicker(): void {
+    resetPanel();
     panel.setLabel(" Game Level ");
-    panel.setScroll(0);
     const options: GameLevel[] = ["very-easy", "easy", "medium", "hard", "expert", "insane"];
     const chooser = blessed.list({
       parent: panel,
@@ -612,18 +643,147 @@ export function runTui(dbPath: string): void {
   }
 
   function showStats(): void {
+    resetPanel();
     const s = storage.getStats90d();
-    const runs = storage.getRuns(20);
+    const runs = storage.getRuns(60);
     panel.setLabel(" Stats ");
-    panel.setContent(
-      `{bold}{cyan-fg}90 Day Stats{/cyan-fg}{/bold}\n\n` +
-      `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM\n` +
-      `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM\n` +
-      `{magenta-fg}Accuracy{/magenta-fg}: ${s.avgAccuracy}%\n` +
-      `{blue-fg}Consistency{/blue-fg}: ${s.consistency}\n` +
-      `Runs: ${s.totalRuns}\n\n` +
-      runs.slice(0, 10).map((r, i) => `${String(i + 1).padStart(2, "0")}. ${r.netWpm} WPM · ${r.accuracy}%`).join("\n")
-    );
+
+    const width = typeof screen.width === "number" ? screen.width : 120;
+    const height = typeof screen.height === "number" ? screen.height : 36;
+
+    if (width < 110 || height < 28) {
+      panel.setContent(
+        `{bold}{cyan-fg}Stats Dashboard{/cyan-fg}{/bold}\n\n` +
+        `Terminal too small for chart widgets.\n` +
+        `Resize to at least 110x28 for full dashboard.\n\n` +
+        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM\n` +
+        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM\n` +
+        `{magenta-fg}Accuracy{/magenta-fg}: ${s.avgAccuracy}%\n` +
+        `{blue-fg}Consistency{/blue-fg}: ${s.consistency}\n` +
+        `Runs: ${s.totalRuns}\n`
+      );
+      screen.render();
+      return;
+    }
+
+    const modeCounts = new Map<string, number>();
+    for (const run of runs) {
+      modeCounts.set(run.mode, (modeCounts.get(run.mode) ?? 0) + 1);
+    }
+    const modeLabels = [...modeCounts.keys()];
+    const modeData = modeLabels.map((m) => modeCounts.get(m) ?? 0);
+    const maxMode = modeData.length > 0 ? Math.max(...modeData) : 1;
+
+    const recentForTrend = [...runs].reverse().slice(-25);
+    const x = recentForTrend.map((_r, i) => String(i + 1));
+    const wpmY = recentForTrend.map((r) => round2(r.netWpm));
+    const accY = recentForTrend.map((r) => round2(r.accuracy));
+
+    const trend = contrib.line({
+      parent: panel,
+      top: 0,
+      left: 0,
+      width: "66%",
+      height: "45%",
+      label: " Performance Trend (latest 25 runs) ",
+      xPadding: 2,
+      xLabelPadding: 1,
+      wholeNumbersOnly: false,
+      legend: { width: 10 },
+      style: { line: "cyan", text: "white", baseline: "gray" }
+    });
+    trend.setData([
+      { title: "WPM", x, y: wpmY, style: { line: "green" } },
+      { title: "ACC", x, y: accY, style: { line: "magenta" } }
+    ]);
+
+    const modes = contrib.bar({
+      parent: panel,
+      top: 0,
+      left: "66%",
+      width: "34%",
+      height: "45%",
+      label: " Mode Split ",
+      barWidth: 4,
+      barSpacing: 2,
+      xOffset: 0,
+      maxHeight: Math.max(3, maxMode),
+      barBgColor: "cyan",
+      barFgColor: "black"
+    });
+    modes.setData({
+      titles: modeLabels.length > 0 ? modeLabels.map((m) => m.slice(0, 6)) : ["none"],
+      data: modeData.length > 0 ? modeData : [0]
+    });
+
+    const avgAccuracy = contrib.gauge({
+      parent: panel,
+      top: "45%",
+      left: 0,
+      width: "33%",
+      height: "20%",
+      label: " Avg Accuracy ",
+      stroke: "magenta",
+      fill: "black"
+    } as never);
+    avgAccuracy.setPercent(Math.max(0, Math.min(100, Math.round(s.avgAccuracy))));
+
+    const consistency = contrib.gauge({
+      parent: panel,
+      top: "45%",
+      left: "33%",
+      width: "33%",
+      height: "20%",
+      label: " Consistency ",
+      stroke: "yellow",
+      fill: "black"
+    } as never);
+    consistency.setPercent(Math.max(0, Math.min(100, Math.round(s.consistency))));
+
+    const summary = blessed.box({
+      parent: panel,
+      top: "45%",
+      left: "66%",
+      width: "34%",
+      height: "20%",
+      border: "line",
+      tags: true,
+      style: { border: { fg: "cyan" }, fg: "white" },
+      content:
+        `{bold}{cyan-fg}90 Day Summary{/cyan-fg}{/bold}\n` +
+        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM\n` +
+        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM\n` +
+        `{magenta-fg}Runs{/magenta-fg}: ${s.totalRuns}`
+    });
+    panel.append(summary);
+
+    const rows = runs.slice(0, 10).map((r, i) => [
+      String(i + 1),
+      r.mode,
+      `${r.netWpm}`,
+      `${r.accuracy}%`,
+      formatRelativeTime(r.startedAt)
+    ]);
+    const table = contrib.table({
+      parent: panel,
+      top: "65%",
+      left: 0,
+      width: "100%",
+      height: "35%",
+      label: " Recent Runs ",
+      keys: false,
+      interactive: false as unknown as string,
+      fg: "white",
+      selectedFg: "white",
+      selectedBg: "black",
+      columnSpacing: 2,
+      columnWidth: [4, 12, 10, 10, 14]
+    });
+    table.setData({
+      headers: ["#", "Mode", "WPM", "ACC", "When"],
+      data: rows.length > 0 ? rows : [["-", "-", "-", "-", "-"]]
+    });
+
     screen.render();
   }
 
@@ -714,9 +874,10 @@ export function runTui(dbPath: string): void {
   });
 }
 
-function renderTargetDiff(target: string, typed: string): string {
+function renderTargetDiff(target: string, typed: string, viewport: Viewport): string {
   const out: string[] = [];
-  for (let i = 0; i < target.length; i++) {
+  if (viewport.start > 0) out.push("{gray-fg}... {/gray-fg}");
+  for (let i = viewport.start; i < viewport.end; i++) {
     const ch = escapeTags(target[i]);
     if (i < typed.length) {
       out.push(`{white-fg}${ch}{/white-fg}`);
@@ -726,18 +887,36 @@ function renderTargetDiff(target: string, typed: string): string {
       out.push(`{yellow-fg}${ch}{/yellow-fg}`);
     }
   }
+  if (viewport.end < target.length) out.push("{gray-fg} ...{/gray-fg}");
   return out.join("");
 }
 
-function renderTypedDiff(target: string, typed: string): string {
+function renderTypedDiff(target: string, typed: string, viewport: Viewport): string {
   if (!typed) return "{white-fg}(start typing...){/white-fg}";
   const out: string[] = [];
-  for (let i = 0; i < typed.length; i++) {
+  if (viewport.start > 0 && typed.length > viewport.start) out.push("{gray-fg}... {/gray-fg}");
+  for (let i = viewport.start; i < Math.min(viewport.end, typed.length); i++) {
     const c = escapeTags(typed[i]);
     if (typed[i] === target[i]) out.push(`{green-fg}${c}{/green-fg}`);
     else out.push(`{red-fg}${c}{/red-fg}`);
   }
+  if (typed.length > viewport.end) out.push("{gray-fg} ...{/gray-fg}");
   return out.join("");
+}
+
+interface Viewport {
+  start: number;
+  end: number;
+}
+
+function createViewport(target: string, cursor: number, size: number): Viewport {
+  if (target.length <= size) return { start: 0, end: target.length };
+  const pivot = Math.max(0, Math.min(target.length, cursor));
+  const left = Math.floor(size * 0.45);
+  let start = Math.max(0, pivot - left);
+  let end = Math.min(target.length, start + size);
+  if (end - start < size) start = Math.max(0, end - size);
+  return { start, end };
 }
 
 function renderKeyboard(lastKeyPress: { label: string; correct: boolean; at: number } | null, animate: boolean): string {
@@ -826,4 +1005,14 @@ function escapeTags(value: string): string {
 function clipAnsiAware(value: string, maxCols: number): string {
   if (stringWidth(value) <= maxCols) return value;
   return `${value.slice(0, Math.max(0, maxCols - 1))}…`;
+}
+
+function formatRelativeTime(iso: string): string {
+  const ts = new Date(iso).getTime();
+  if (Number.isNaN(ts)) return "now";
+  const delta = Date.now() - ts;
+  if (delta < 60000) return "now";
+  if (delta < 3600000) return `${Math.floor(delta / 60000)}m ago`;
+  if (delta < 86400000) return `${Math.floor(delta / 3600000)}h ago`;
+  return `${Math.floor(delta / 86400000)}d ago`;
 }
