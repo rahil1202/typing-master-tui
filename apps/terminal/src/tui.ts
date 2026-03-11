@@ -6,7 +6,17 @@ import spinners from "cli-spinners";
 import gradient from "gradient-string";
 import stringWidth from "string-width";
 import { initLip, Lipgloss } from "charsm";
-import { composeAdaptiveDrill, getDifficultyConfig, getLessonsForDifficulty, makeParagraphTest, normalizeCustomText, pickQuote, type Difficulty, type Lesson } from "./core/content.js";
+import {
+  buildCustomModeText,
+  composeAdaptiveDrill,
+  getCustomModeOptions,
+  getDifficultyConfig,
+  getLessonsForDifficulty,
+  makeParagraphTest,
+  type CustomMode,
+  type Difficulty,
+  type Lesson
+} from "./core/content.js";
 import type { RunResult } from "./core/typingEngine.js";
 import { Storage, type TrainingProgress } from "./core/storage.js";
 import { TypingSession } from "./core/typingEngine.js";
@@ -14,14 +24,18 @@ import { detectTerminalHost, DiagnosticsLogger, PerfTracker, runDoctor } from ".
 
 const THEME = {
   bg: "black",
+  panel: "black",
   text: "white",
   muted: "gray",
   brand: "cyan",
   accent: "yellow",
+  accentSoft: "blue",
   ok: "green",
   bad: "red",
+  info: "magenta",
   borderPrimary: "cyan",
-  borderSecondary: "magenta"
+  borderSecondary: "magenta",
+  borderMuted: "gray"
 } as const;
 
 const UI = {
@@ -31,6 +45,31 @@ const UI = {
   transitionOutMs: 320,
   toastMs: 1400
 } as const;
+
+type GameLevel =
+  | "rookie"
+  | "very-easy"
+  | "easy"
+  | "medium"
+  | "challenging"
+  | "hard"
+  | "expert"
+  | "master"
+  | "insane"
+  | "legend";
+
+const LEVELS: GameLevel[] = [
+  "rookie",
+  "very-easy",
+  "easy",
+  "medium",
+  "challenging",
+  "hard",
+  "expert",
+  "master",
+  "insane",
+  "legend"
+];
 
 let lip: Lipgloss | null = null;
 let lipInitStarted = false;
@@ -75,7 +114,6 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     storage.saveSettings(settings);
   }
 
-  type GameLevel = "very-easy" | "easy" | "medium" | "hard" | "expert" | "insane";
   let selectedLevel: GameLevel = "easy";
   const perf = new PerfTracker();
   const logger = new DiagnosticsLogger(settings.diagnosticsEnabled);
@@ -83,19 +121,33 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
 
   const getLevelProfile = (level: GameLevel): { difficulty: Difficulty; extraWords: number; label: string } => {
     switch (level) {
+      case "rookie":
+        return { difficulty: "beginner", extraWords: -10, label: "Rookie" };
       case "very-easy":
         return { difficulty: "beginner", extraWords: -6, label: "Very Easy" };
       case "easy":
         return { difficulty: "beginner", extraWords: 0, label: "Easy" };
       case "medium":
         return { difficulty: "intermediate", extraWords: 0, label: "Medium" };
+      case "challenging":
+        return { difficulty: "intermediate", extraWords: 8, label: "Challenging" };
       case "hard":
         return { difficulty: "advanced", extraWords: 4, label: "Hard" };
       case "expert":
         return { difficulty: "expert", extraWords: 0, label: "Expert" };
+      case "master":
+        return { difficulty: "expert", extraWords: 10, label: "Master" };
+      case "insane":
+        return { difficulty: "expert", extraWords: 18, label: "Insane" };
       default:
-        return { difficulty: "expert", extraWords: 10, label: "Insane" };
+        return { difficulty: "expert", extraWords: 26, label: "Legend" };
     }
+  };
+
+  const readImportedCustomText = (): string => {
+    const imported = path.join(os.homedir(), ".typing-master", "last-import.txt");
+    if (!fs.existsSync(imported)) return "";
+    return fs.readFileSync(imported, "utf8");
   };
 
   const screen = blessed.screen({
@@ -150,7 +202,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     left: 0,
     width: "26%",
     height: "100%-3",
-    label: " Modes ",
+    label: " Launch Deck ",
     tags: true,
     border: "line",
     keys: true,
@@ -159,23 +211,23 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     style: {
       border: { fg: THEME.borderSecondary },
       item: { fg: THEME.text },
-      selected: { bg: THEME.accent, fg: "black", bold: true }
+      selected: { bg: THEME.brand, fg: "black", bold: true }
     },
     items: []
   });
 
   const renderMenuItems = (): void => {
     menu.setItems([
-      "Practice Training",
-      "Lessons",
-      "Typing Test",
-      "Custom Test",
-      "Stats",
-      "Coach Insights",
-      `Game Level (${selectedLevel.toUpperCase()})`,
-      `Toggle Sound (${settings.sound ? "ON" : "OFF"})`,
-      `Toggle Keyboard (${settings.showKeyboard ? "ON" : "OFF"})`,
-      "Quit"
+      "Practice Training  - guided climb",
+      "Lessons           - technique reps",
+      "Typing Test       - full run",
+      "Custom Test       - imported text",
+      "Stats             - performance board",
+      "Coach Insights    - mistake intel",
+      `Game Level        - ${getLevelProfile(selectedLevel).label}`,
+      `Toggle Sound      - ${settings.sound ? "ON" : "OFF"}`,
+      `Toggle Keyboard   - ${settings.showKeyboard ? "ON" : "OFF"}`,
+      "Quit              - exit terminal"
     ]);
   };
 
@@ -185,7 +237,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     left: "26%",
     width: "74%",
     height: "100%-3",
-    label: " Session ",
+    label: " Mission Control ",
     tags: true,
     border: "line",
     scrollable: true,
@@ -193,7 +245,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     mouse: true,
     keys: true,
     vi: true,
-    style: { border: { fg: THEME.borderPrimary }, fg: THEME.text, bg: THEME.bg },
+    style: { border: { fg: THEME.borderPrimary }, fg: THEME.text, bg: THEME.panel },
     scrollbar: { ch: " ", style: { bg: THEME.borderSecondary } }
   });
 
@@ -213,7 +265,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     height: 1,
     tags: true,
     style: { bg: THEME.bg, fg: THEME.muted },
-    content: "  ENTER Select    ESC Back    Ctrl+P Palette    F12 Reset    F3 Sound    F2 Keyboard    Q Quit  "
+    content: "  ENTER launch  ·  ESC back  ·  Ctrl+P palette  ·  F12 reset  ·  F3 sound  ·  F2 keyboard  ·  Q quit  "
   });
 
   const toast = blessed.box({
@@ -277,8 +329,10 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   };
 
   const renderHeader = (): void => {
-    const logo = gradient(["#22d3ee", "#a78bfa"])("Typing Master");
-    const raw = `${logo} · ${profile.nickname} · ${selectedLevel.toUpperCase()} · Flow Mode`;
+    const logo = gradient(["#22d3ee", "#38bdf8", "#a78bfa"])("Typing Master");
+    const levelLabel = getLevelProfile(selectedLevel).label.toUpperCase();
+    const motionLabel = settings.reducedMotion ? "Calm Motion" : "Arcade Motion";
+    const raw = `${logo} · ${profile.nickname} · ${levelLabel} · ${motionLabel}`;
     const cols = typeof screen.width === "number" ? screen.width : 120;
     const clipped = clipAnsiAware(raw, Math.max(20, cols - 2));
     setHeaderContent(` ${clipped}`);
@@ -286,28 +340,92 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
 
   const renderIdleStats = (): void => {
     const s = storage.getStats90d();
+    const training = storage.getTrainingProgress();
+    const streak = computeCleanStreak(storage.getRuns(12));
+    const levelTone = toneForLevel(selectedLevel);
     setStatsContent(
-      ` {green-fg}Best ${s.bestWpm} WPM{/green-fg}  {yellow-fg}Avg ${s.avgWpm} WPM{/yellow-fg}  {magenta-fg}Accuracy ${s.avgAccuracy}%{/magenta-fg}  {cyan-fg}Runs ${s.totalRuns}{/cyan-fg}  Sound:${settings.sound ? "ON" : "OFF"}  Keyboard:${settings.showKeyboard ? "ON" : "OFF"}`
+      ` ${renderPill("BEST", `${s.bestWpm} WPM`, THEME.ok)}  ` +
+      `${renderPill("AVG", `${s.avgWpm} WPM`, THEME.accent)}  ` +
+      `${renderPill("ACC", `${s.avgAccuracy}%`, THEME.info)}  ` +
+      `${renderPill("TIER", training.tier.toUpperCase(), levelTone)}  ` +
+      `${renderPill("STREAK", String(streak), THEME.brand)}  ` +
+      `{${THEME.muted}-fg}Sound ${settings.sound ? "ON" : "OFF"} · Keyboard ${settings.showKeyboard ? "ON" : "OFF"}{/` +
+      `${THEME.muted}-fg}`
     );
   };
 
   const renderLiveStats = (wpm: number, accuracy: number, mistakes: number, progress: number): void => {
     setStatsContent(
-      ` {green-fg}${wpm} WPM{/green-fg}  {yellow-fg}${accuracy}% ACC{/yellow-fg}  {red-fg}${mistakes} ERR{/red-fg}  {cyan-fg}${progress}%{/cyan-fg}  {white-fg}${selectedLevel.toUpperCase()}{/white-fg}`
+      ` ${renderPill("PACE", `${wpm} WPM`, THEME.ok)}  ` +
+      `${renderPill("ACC", `${accuracy}%`, THEME.accent)}  ` +
+      `${renderPill("ERR", String(mistakes), mistakes > 0 ? THEME.bad : THEME.brand)}  ` +
+      `${renderPill("FLOW", `${progress}%`, toneForLevel(selectedLevel))}  ` +
+      `{${THEME.muted}-fg}${getLevelProfile(selectedLevel).label} · ESC abort{/` +
+      `${THEME.muted}-fg}`
     );
   };
 
   const renderHome = (): void => {
     resetPanel();
     renderMenuItems();
-    panel.setLabel(" Session ");
+    panel.setLabel(" Mission Control ");
+    const s = storage.getStats90d();
+    const training = storage.getTrainingProgress();
+    const coach = storage.getCoachInsights(24);
+    const lessons = getLessonsForDifficulty(getLevelProfile(selectedLevel).difficulty);
+    const nextLesson = lessons[0];
+    const nextTierAt = trainingTierGoal(training.tier);
+    const tierPct = training.tier === "master"
+      ? 100
+      : Math.min(100, Math.round((training.points / Math.max(1, nextTierAt)) * 100));
+    const recentRuns = storage.getRuns(6);
+    const streak = computeCleanStreak(recentRuns);
     setPanelContent(
+      renderHero(
+        "ARCADE TERMINAL",
+        "Typing Master",
+        "Fast visual feedback, guided practice, and clean progress tracking built for terminal flow.",
+        toneForLevel(selectedLevel)
+      ) +
+      "\n\n" +
       renderCard(
-        "{bold}{cyan-fg}Ready{/cyan-fg}{/bold}",
-        "Minimal. Fast. Focused.\n\n" +
-        "{white-fg}Pick a mode from the left menu.{/white-fg}\n\n" +
-        "{yellow-fg}Target{/yellow-fg}: upcoming text\n" +
-        "{white-fg}Output{/white-fg}: your typed stream with {green-fg}green{/green-fg}/{red-fg}red{/red-fg} feedback"
+        "Session Snapshot",
+        `${renderPill("LEVEL", getLevelProfile(selectedLevel).label.toUpperCase(), toneForLevel(selectedLevel))}  ` +
+        `${renderPill("BEST", `${s.bestWpm} WPM`, THEME.ok)}  ` +
+        `${renderPill("AVG", `${s.avgWpm} WPM`, THEME.accent)}\n` +
+        `${renderPill("ACC", `${s.avgAccuracy}%`, THEME.info)}  ` +
+        `${renderPill("RUNS", String(s.totalRuns), THEME.brand)}  ` +
+        `${renderPill("STREAK", `${streak} clean`, THEME.ok)}`
+      ) +
+      "\n\n" +
+      renderCard(
+        "Today's Flight Plan",
+        `${renderProgressRow("Tier climb", training.points, nextTierAt, 24, toneForLevel(selectedLevel))}\n` +
+        `Coach target: ${coach.dailyTarget}\n` +
+        `Training tier: ${training.tier.toUpperCase()} · Best drill ${training.bestWpm} WPM @ ${training.bestAccuracy}%\n` +
+        `Next lesson: ${nextLesson ? `${nextLesson.title} [${nextLesson.level}]` : "Waiting for content"}\n` +
+        `Tier progress: ${tierPct}% ${training.tier === "master" ? "(maxed)" : `toward ${nextTierAt} pts`}`,
+        THEME.accent
+      ) +
+      "\n\n" +
+      renderCard(
+        "Mode Deck",
+        [
+          "Practice Training  guided drills and adaptive recovery",
+          "Lessons           focused accuracy-building reps",
+          "Typing Test       timed pace check with full metrics",
+          "Custom Test       imported text for real-world practice",
+          "Stats / Coach     trend review and weak-key analysis"
+        ].join("\n"),
+        THEME.brand
+      ) +
+      "\n\n" +
+      renderCard(
+        "Quick Controls",
+        "Enter launches the selected mode.\n" +
+        "Ctrl+P opens the palette for quick actions.\n" +
+        "F2 toggles keyboard dock, F3 toggles sound, F12 resets the layout.",
+        THEME.muted
       )
     );
     if (forcedPerfHud || settings.performanceMode) perfHud.show();
@@ -344,7 +462,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       const pct = Math.min(100, Math.floor((elapsed / 1400) * 100));
       const plain =
         `Initializing Typing Master\n\n` +
-        `${frames[i % frames.length]}  Loading interface...\n` +
+        `${frames[i % frames.length]}  Building arcade terminal surfaces...\n` +
         `${progressBar(pct, 30)} ${pct}%\n\n` +
         `Powered by Blessed + charsm`;
       splash.setContent(lip ? lip.apply({ value: plain, id: "splash" }) : plain);
@@ -418,7 +536,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     onComplete?: (result: RunResult) => void
   ): void {
     resetPanel();
-    panel.setLabel(` ${mode.toUpperCase()} `);
+    panel.setLabel(` ${mode.toUpperCase()} RUN `);
 
     const session = new TypingSession(text, false);
     let lastKeyPress: { label: string; correct: boolean; at: number } | null = null;
@@ -447,16 +565,48 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       const elapsed = Math.max(1, Date.now() - startedAt);
       const live = computeLiveMetrics(snap.typed.length, snap.correctChars, snap.mistakes, elapsed);
       const progress = Math.floor((snap.cursor / Math.max(1, text.length)) * 100);
+      const levelProfile = getLevelProfile(selectedLevel);
+      const currentChar = text[snap.cursor] ?? "DONE";
+      const lastFeedback = lastKeyPress
+        ? `${lastKeyPress.label} ${lastKeyPress.correct ? "landed clean" : "was off"}`
+        : "Waiting for your first key";
       renderLiveStats(live.netWpm, live.accuracy, snap.mistakes, progress);
       const viewport = createViewport(text, snap.cursor, UI.viewportChars);
 
       setPanelContent(
-        renderSection("TARGET", renderTargetDiff(text, snap.typed, viewport), THEME.accent) +
+        renderHero(
+          `${mode.toUpperCase()} MODE`,
+          `${levelProfile.label} profile`,
+          `${text.length} chars · flow-forward scoring · ${settings.showKeyboard ? "keyboard dock on" : "keyboard dock off"}`,
+          toneForLevel(selectedLevel)
+        ) +
         "\n\n" +
-        renderSection("OUTPUT", renderTypedDiff(text, snap.typed, viewport), THEME.text) +
+        renderCard(
+          "Pace Board",
+          `${renderPill("WPM", `${live.netWpm}`, THEME.ok)}  ` +
+          `${renderPill("ACC", `${live.accuracy}%`, THEME.accent)}  ` +
+          `${renderPill("ERR", `${snap.mistakes}`, snap.mistakes > 0 ? THEME.bad : THEME.brand)}  ` +
+          `${renderPill("PROGRESS", `${progress}%`, toneForLevel(selectedLevel))}\n` +
+          `${renderProgressRow("Run completion", progress, 100, 28, toneForLevel(selectedLevel))}\n` +
+          `Current key: ${escapeTags(currentChar === " " ? "SPACE" : currentChar)}\n` +
+          `Feedback: ${lastFeedback}`,
+          THEME.brand
+        ) +
         "\n\n" +
-        (settings.showKeyboard ? `{bold}Keyboard{/bold}\n${renderKeyboard(lastKeyPress, settings.keyAnimation)}\n\n` : "") +
-        `{gray-fg}ESC exit{/gray-fg}`
+        renderSection("READ LANE", renderTargetDiff(text, snap.typed, viewport), THEME.accent) +
+        "\n\n" +
+        renderSection("TYPE LANE", renderTypedDiff(text, snap.typed, viewport), snap.mistakes > 0 ? THEME.bad : THEME.ok) +
+        "\n\n" +
+        (settings.showKeyboard
+          ? renderCard("Keyboard Dock", renderKeyboard(lastKeyPress, settings.keyAnimation), THEME.info) + "\n\n"
+          : renderCard(
+            "Focus",
+            `Keep the eye-line on the read lane, then trust rhythm in the type lane.\n` +
+            `ESC exits the run immediately if you need to reset.`,
+            THEME.muted
+          ) + "\n\n") +
+        `{${THEME.muted}-fg}ESC exits the run immediately{/` +
+        `${THEME.muted}-fg}`
       );
       dirty = false;
       perf.endRender(renderStart);
@@ -472,6 +622,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     const finish = (): void => {
       running = false;
       const result = session.finalize(mode, textId, Date.now());
+      const verdict = summarizeRunVerdict(result);
       storage.addRun(result);
       if (settings.sound) playEndSound();
       onComplete?.(result);
@@ -479,33 +630,48 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       renderIdleStats();
       cleanupInput();
       const finalize = (): void => {
-      panel.setLabel(" Result ");
-      setPanelContent(
-        lip
-          ? lip.apply({
-              value:
-                `Run Complete\n\n` +
-                `Net WPM: ${result.netWpm}\n` +
-                `Accuracy: ${result.accuracy}%\n` +
-                `Mistakes: ${result.mistakes}\n\n` +
-                `Press any key to return`,
-              id: "result"
-            })
-          : `{bold}{green-fg}Run Complete{/green-fg}{/bold}\n\n` +
-            `Net WPM: {green-fg}${result.netWpm}{/green-fg}\n` +
-            `Accuracy: {yellow-fg}${result.accuracy}%{/yellow-fg}\n` +
-            `Mistakes: {red-fg}${result.mistakes}{/red-fg}\n\n` +
-            `{gray-fg}Press any key to return{/gray-fg}`
-      );
-      screen.render();
-      const returnHome = (): void => renderHome();
-      screen.once("keypress", returnHome);
-      screen.once("mousedown", returnHome);
-      // Fallback so user is never stuck on result screen.
-      setTimeout(() => {
-        const isDestroyed = Boolean((screen as unknown as { destroyed?: boolean }).destroyed);
-        if (!isDestroyed) renderHome();
-      }, 1500);
+        panel.setLabel(" Run Summary ");
+        setPanelContent(
+          lip
+            ? lip.apply({
+                value:
+                  `Run Complete\n${verdict.title}\n\n` +
+                  `Net WPM: ${result.netWpm}\n` +
+                  `Accuracy: ${result.accuracy}%\n` +
+                  `Mistakes: ${result.mistakes}\n` +
+                  `CPM: ${result.cpm}\n\n` +
+                  `${verdict.summary}\n\n` +
+                  `Press any key to return`,
+                id: "result"
+              })
+            : renderHero("RUN COMPLETE", verdict.title, verdict.summary, result.accuracy >= 95 ? THEME.ok : THEME.accent) +
+              "\n\n" +
+              renderCard(
+                "Scoreboard",
+                `${renderPill("NET", `${result.netWpm} WPM`, THEME.ok)}  ` +
+                `${renderPill("ACC", `${result.accuracy}%`, THEME.accent)}  ` +
+                `${renderPill("ERR", `${result.mistakes}`, result.mistakes > 0 ? THEME.bad : THEME.ok)}\n` +
+                `${renderPill("CPM", `${result.cpm}`, THEME.brand)}  ` +
+                `${renderPill("MODE", mode.toUpperCase(), toneForLevel(selectedLevel))}`,
+                THEME.brand
+              ) +
+              "\n\n" +
+              renderCard(
+                "Next Move",
+                `${verdict.summary}\n` +
+                `Press any key to return to Mission Control.`,
+                THEME.info
+              )
+        );
+        screen.render();
+        const returnHome = (): void => renderHome();
+        screen.once("keypress", returnHome);
+        screen.once("mousedown", returnHome);
+        // Fallback so user is never stuck on result screen.
+        setTimeout(() => {
+          const isDestroyed = Boolean((screen as unknown as { destroyed?: boolean }).destroyed);
+          if (!isDestroyed) renderHome();
+        }, 1500);
       };
       if (settings.reducedMotion) finalize();
       else void runExitTransition(panel, finalize);
@@ -635,33 +801,96 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     resetPanel();
     const lessons = getLessonsForDifficulty(getLevelProfile(selectedLevel).difficulty);
     panel.setLabel(" Lessons ");
+    const preview = blessed.box({
+      parent: panel,
+      top: 0,
+      left: "42%",
+      width: "58%",
+      height: "100%",
+      tags: true,
+      border: "line",
+      label: " Lesson Preview ",
+      scrollable: true,
+      alwaysScroll: true,
+      style: { border: { fg: THEME.brand }, fg: THEME.text, bg: THEME.panel }
+    });
     const chooser = blessed.list({
       parent: panel,
-      width: "100%",
+      left: 0,
+      width: "42%",
       height: "100%",
       keys: true,
       vi: true,
       mouse: true,
       border: "line",
-      style: { selected: { bg: "cyan", fg: "black" } },
-      items: lessons.map((l) => `${l.title} [${l.level}]`)
+      label: " Drill Library ",
+      style: {
+        border: { fg: THEME.borderSecondary },
+        selected: { bg: THEME.brand, fg: "black", bold: true }
+      },
+      items: lessons.map((l, index) => `${String(index + 1).padStart(2, "0")}  ${l.title}  [${l.level}]`)
     });
     chooser.focus();
+
+    const renderLessonPreview = (lesson: Lesson | undefined): void => {
+      if (!lesson) {
+        preview.setContent(renderCard("No Lesson", "No lesson content is available for this difficulty yet.", THEME.bad));
+        screen.render();
+        return;
+      }
+      preview.setContent(
+        renderHero("DRILL PREVIEW", lesson.title, `Level ${lesson.level.toUpperCase()} · ${lesson.text.length} chars`, toneForLevel(selectedLevel)) +
+        "\n\n" +
+        renderCard(
+          "What To Expect",
+          `This drill targets rhythm, accuracy, and repeatable movement.\n` +
+          `Difficulty profile: ${getLevelProfile(selectedLevel).label}\n` +
+          `Recommended posture: slow hands, clean cadence, no rushing.`,
+          THEME.brand
+        ) +
+        "\n\n" +
+        renderCard(
+          "Preview Text",
+          previewText(lesson.text, 220),
+          THEME.accent
+        ) +
+        "\n\n" +
+        renderCard(
+          "Launch",
+          "Press Enter to start the highlighted lesson.\nPress ESC to return to Mission Control.",
+          THEME.muted
+        )
+      );
+      screen.render();
+    };
 
     const pick = (idx: number): void => {
       const lesson = lessons[idx];
       if (!lesson) return;
       chooser.destroy();
+      preview.destroy();
       runTypingMode("lesson", lesson.text, lesson.id, lesson.level);
     };
 
     chooser.on("select", (_item, idx) => pick(idx));
     chooser.on("action", (_item, idx) => pick(idx));
+    chooser.on("keypress", (_ch, key) => {
+      if (key.name === "escape") {
+        chooser.destroy();
+        preview.destroy();
+        renderHome();
+        return;
+      }
+      const selected = (chooser as unknown as { selected?: number }).selected;
+      renderLessonPreview(lessons[typeof selected === "number" ? selected : 0]);
+    });
     chooser.on("click", () => {
       const selected = (chooser as unknown as { selected?: number }).selected;
       pick(typeof selected === "number" ? selected : 0);
     });
 
+    chooser.select(0);
+    renderLessonPreview(lessons[0]);
     screen.render();
   }
 
@@ -669,18 +898,108 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     const level = getLevelProfile(selectedLevel);
     const cfg = getDifficultyConfig(level.difficulty);
     const wordCount = Math.max(12, cfg.wordCount + level.extraWords);
-    const text = makeParagraphTest(level.difficulty, wordCount, Math.floor(Date.now() / 1000) + cfg.seedOffset);
+    const flavor = (Date.now() + cfg.seedOffset) % 2 === 0 ? "mixed" : "story";
+    const text = makeParagraphTest(level.difficulty, wordCount, Math.floor(Date.now() / 1000) + cfg.seedOffset, flavor);
     runTypingMode("test", text, `paragraph-${selectedLevel}-${Date.now()}`, level.difficulty);
   }
 
   function showCustomTest(): void {
-    const cfg = getDifficultyConfig(getLevelProfile(selectedLevel).difficulty);
-    const imported = path.join(os.homedir(), ".typing-master", "last-import.txt");
-    let text = "paste custom text by running `typing-master import <file>` first";
-    if (fs.existsSync(imported)) text = fs.readFileSync(imported, "utf8");
-    text = normalizeCustomText(text, cfg.custom);
-    if (!text) text = pickQuote();
-    runTypingMode("custom", text, `custom-${selectedLevel}-${Date.now()}`, getLevelProfile(selectedLevel).difficulty);
+    resetPanel();
+    panel.setLabel(" Custom Modes ");
+    const modes = getCustomModeOptions();
+    const preview = blessed.box({
+      parent: panel,
+      top: 0,
+      left: "44%",
+      width: "56%",
+      height: "100%",
+      tags: true,
+      border: "line",
+      label: " Mode Preview ",
+      scrollable: true,
+      alwaysScroll: true,
+      style: { border: { fg: THEME.brand }, fg: THEME.text, bg: THEME.panel }
+    });
+    const chooser = blessed.list({
+      parent: panel,
+      left: 0,
+      width: "44%",
+      height: "100%",
+      keys: true,
+      vi: true,
+      mouse: true,
+      border: "line",
+      label: " Custom Test Types ",
+      style: {
+        border: { fg: THEME.borderSecondary },
+        selected: { bg: THEME.brand, fg: "black", bold: true }
+      },
+      items: modes.map((mode, index) => `${String(index + 1).padStart(2, "0")}  ${mode.label}`)
+    });
+    chooser.focus();
+
+    const renderModePreview = (mode: CustomMode | undefined): void => {
+      if (!mode) return;
+      const config = modes.find((item) => item.id === mode);
+      const level = getLevelProfile(selectedLevel);
+      const previewSeed = 1000 + modes.findIndex((item) => item.id === mode) * 37 + LEVELS.indexOf(selectedLevel) * 13;
+      const built = buildCustomModeText(mode, level.difficulty, previewSeed, readImportedCustomText());
+      preview.setContent(
+        renderHero("CUSTOM MODE", config?.label ?? "Custom", config?.description ?? "", toneForLevel(selectedLevel)) +
+        "\n\n" +
+        renderCard(
+          "Profile",
+          `${renderPill("LEVEL", level.label.toUpperCase(), toneForLevel(selectedLevel))}  ` +
+          `${renderPill("DIFFICULTY", level.difficulty.toUpperCase(), THEME.brand)}\n` +
+          `This mode uses ${mode.replace(/-/g, " ")} content tuned for the current level.`,
+          THEME.brand
+        ) +
+        "\n\n" +
+        renderCard(
+          "Preview Text",
+          previewText(built.text, 240),
+          THEME.accent
+        ) +
+        "\n\n" +
+        renderCard(
+          "Launch",
+          "Press Enter to start the selected custom mode.\nPress ESC to go back.",
+          THEME.muted
+        )
+      );
+      screen.render();
+    };
+
+    const pick = (idx: number): void => {
+      const mode = modes[idx];
+      if (!mode) return;
+      const level = getLevelProfile(selectedLevel);
+      const built = buildCustomModeText(mode.id, level.difficulty, Date.now(), readImportedCustomText());
+      chooser.destroy();
+      preview.destroy();
+      runTypingMode("custom", built.text, built.textId, level.difficulty);
+    };
+
+    chooser.on("select", (_item, idx) => pick(idx));
+    chooser.on("action", (_item, idx) => pick(idx));
+    chooser.on("keypress", (_ch, key) => {
+      if (key.name === "escape") {
+        chooser.destroy();
+        preview.destroy();
+        renderHome();
+        return;
+      }
+      const selected = (chooser as unknown as { selected?: number }).selected;
+      renderModePreview(modes[typeof selected === "number" ? selected : 0]?.id);
+    });
+    chooser.on("click", () => {
+      const selected = (chooser as unknown as { selected?: number }).selected;
+      pick(typeof selected === "number" ? selected : 0);
+    });
+
+    chooser.select(0);
+    renderModePreview(modes[0]?.id);
+    screen.render();
   }
 
   function trainingTierToDifficulty(tier: TrainingProgress["tier"]): Difficulty {
@@ -710,46 +1029,74 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       top: 0,
       left: 0,
       width: "100%",
-      height: "70%",
+      height: "74%",
       tags: true,
       border: "line",
       label: " Training Summary ",
       scrollable: true,
       alwaysScroll: true,
-      style: { border: { fg: "cyan" } }
+      style: { border: { fg: THEME.brand }, fg: THEME.text, bg: THEME.panel }
     });
 
     const actions = blessed.list({
       parent: panel,
-      top: "70%",
+      top: "74%",
       left: 0,
       width: "100%",
-      height: "30%",
+      height: "26%",
       keys: true,
       vi: true,
       mouse: true,
       border: "line",
-      label: " Actions ",
-      style: { selected: { bg: "green", fg: "black", bold: true } },
+      label: " Launch Options ",
+      style: {
+        border: { fg: THEME.borderSecondary },
+        selected: { bg: THEME.brand, fg: "black", bold: true }
+      },
       items: [
-        "Start Guided Drill",
-        "Start Adaptive Drill",
-        "Back to Home"
+        "Guided Drill   - recommended next step",
+        "Adaptive Drill - pressure-test weak keys",
+        "Back to Home   - return to dashboard"
       ]
     });
     actions.focus();
 
     const drawSummary = (): void => {
       const summaryText =
-        `{bold}{cyan-fg}Zero To Best Program{/cyan-fg}{/bold}\n\n` +
-        `Tier: {yellow-fg}${progress.tier.toUpperCase()}{/yellow-fg}\n` +
-        `Points: {green-fg}${progress.points}{/green-fg}` +
-        (progress.tier !== "master" ? ` / ${nextTierAt}` : " (MAX)") +
-        `\nCompleted Drills: ${progress.completedDrills}\n` +
-        `Best WPM: ${progress.bestWpm}\nBest Accuracy: ${progress.bestAccuracy}%\n\n` +
-        `Milestone Gate: ${coach.consistency >= 70 && progress.bestAccuracy >= 95 ? "{green-fg}PASS{/green-fg}" : "{red-fg}PENDING{/red-fg}"}\n` +
-        `Next Drill: ${lesson ? `${lesson.title} [${lesson.level}]` : "No lesson available"}\n` +
-        `Goal: Build from 0 to Master with consistency.`;
+        renderHero(
+          "0 TO BEST PROGRAM",
+          `Tier ${progress.tier.toUpperCase()}`,
+          "Structured progression from warm control to elite speed without losing accuracy.",
+          toneForLevel(selectedLevel)
+        ) +
+        "\n\n" +
+        renderCard(
+          "Progress Core",
+          `${renderPill("POINTS", `${progress.points}`, THEME.ok)}  ` +
+          `${renderPill("DRILLS", `${progress.completedDrills}`, THEME.brand)}  ` +
+          `${renderPill("BEST", `${progress.bestWpm} WPM`, THEME.accent)}\n` +
+          `${renderPill("ACC", `${progress.bestAccuracy}%`, THEME.info)}  ` +
+          `${renderPill("GATE", coach.consistency >= 70 && progress.bestAccuracy >= 95 ? "PASS" : "PENDING", coach.consistency >= 70 && progress.bestAccuracy >= 95 ? THEME.ok : THEME.bad)}\n` +
+          `${renderProgressRow("Tier climb", progress.points, nextTierAt, 26, toneForLevel(selectedLevel))}`,
+          THEME.brand
+        ) +
+        "\n\n" +
+        renderCard(
+          "Coach Readout",
+          `Consistency ${coach.consistency} · Fatigue ${coach.fatigueScore}\n` +
+          `Target difficulty: ${targetDifficulty.toUpperCase()}\n` +
+          `Weakest key: ${coach.weakestKeys[0] ? `${coach.weakestKeys[0].key} x${coach.weakestKeys[0].count}` : "No data yet"}\n` +
+          `Weakest bigram: ${coach.weakestBigrams[0] ? `${coach.weakestBigrams[0].bigram} x${coach.weakestBigrams[0].count}` : "No data yet"}`,
+          THEME.info
+        ) +
+        "\n\n" +
+        renderCard(
+          "Next Drill",
+          `Recommended: ${lesson ? `${lesson.title} [${lesson.level}]` : "No lesson available"}\n` +
+          `Mission: ${coach.dailyTarget}\n` +
+          `Use Guided Drill for progression or Adaptive Drill to attack mistakes directly.`,
+          THEME.accent
+        );
       summaryBox.setContent(summaryText);
       screen.render();
     };
@@ -792,57 +1139,123 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   function showDifficultyPicker(): void {
     resetPanel();
     panel.setLabel(" Game Level ");
-    const options: GameLevel[] = ["very-easy", "easy", "medium", "hard", "expert", "insane"];
+    const preview = blessed.box({
+      parent: panel,
+      top: 0,
+      left: "42%",
+      width: "58%",
+      height: "100%",
+      tags: true,
+      border: "line",
+      label: " Difficulty Preview ",
+      scrollable: true,
+      alwaysScroll: true,
+      style: { border: { fg: THEME.brand }, fg: THEME.text, bg: THEME.panel }
+    });
     const chooser = blessed.list({
       parent: panel,
-      width: "100%",
+      left: 0,
+      width: "42%",
       height: "100%",
       keys: true,
       vi: true,
       mouse: true,
       border: "line",
-      style: { selected: { bg: "magenta", fg: "white" } },
-      items: options.map((level) => {
+      label: " Levels ",
+      style: {
+        border: { fg: THEME.borderSecondary },
+        selected: { bg: THEME.info, fg: "white", bold: true }
+      },
+      items: LEVELS.map((level) => {
         const profile = getLevelProfile(level);
         const cfg = getDifficultyConfig(profile.difficulty);
         const words = Math.max(12, cfg.wordCount + profile.extraWords);
-        return `${profile.label.toUpperCase()} (${words} words/test)`;
+        return `${profile.label.toUpperCase().padEnd(10, " ")} ${words} words/test`;
       })
     });
 
-    chooser.select(options.indexOf(selectedLevel));
+    chooser.select(LEVELS.indexOf(selectedLevel));
     chooser.focus();
 
+    const renderLevelPreview = (level: GameLevel | undefined): void => {
+      if (!level) return;
+      const profile = getLevelProfile(level);
+      const cfg = getDifficultyConfig(profile.difficulty);
+      const words = Math.max(12, cfg.wordCount + profile.extraWords);
+      const sample = makeParagraphTest(profile.difficulty, Math.min(18, words), cfg.seedOffset + words);
+      preview.setContent(
+        renderHero("LEVEL SELECT", profile.label.toUpperCase(), levelDescriptor(level), toneForLevel(level)) +
+        "\n\n" +
+        renderCard(
+          "Profile",
+          `${renderPill("DIFFICULTY", profile.difficulty.toUpperCase(), toneForLevel(level))}  ` +
+          `${renderPill("WORDS", `${words}`, THEME.brand)}\n` +
+          `Use this level when you want ${levelTip(level)}.`,
+          THEME.brand
+        ) +
+        "\n\n" +
+        renderCard(
+          "Sample Texture",
+          previewText(sample, 220),
+          THEME.accent
+        ) +
+        "\n\n" +
+        renderCard(
+          "Apply",
+          "Press Enter to lock this level for lessons and tests.\nPress ESC to go back without changes.",
+          THEME.muted
+        )
+      );
+      screen.render();
+    };
+
     const pick = (idx: number): void => {
-      const next = options[idx];
+      const next = LEVELS[idx];
       if (!next) return;
       selectedLevel = next;
       chooser.destroy();
+       preview.destroy();
       renderHeader();
       renderIdleStats();
-      panel.setLabel(" Session ");
-      setPanelContent(`Level set to {bold}{cyan-fg}${selectedLevel.toUpperCase()}{/cyan-fg}{/bold}.`);
-      screen.render();
+      showToast(`Level set to ${getLevelProfile(selectedLevel).label}`);
+      renderHome();
     };
 
     chooser.on("select", (_item, idx) => pick(idx));
     chooser.on("action", (_item, idx) => pick(idx));
+    chooser.on("keypress", (_ch, key) => {
+      if (key.name === "escape") {
+        chooser.destroy();
+        preview.destroy();
+        renderHome();
+        return;
+      }
+      const selected = (chooser as unknown as { selected?: number }).selected;
+      renderLevelPreview(LEVELS[typeof selected === "number" ? selected : 0]);
+    });
     chooser.on("click", () => {
       const selected = (chooser as unknown as { selected?: number }).selected;
       pick(typeof selected === "number" ? selected : 0);
     });
 
+    renderLevelPreview(LEVELS[LEVELS.indexOf(selectedLevel)]);
     screen.render();
   }
 
   function showStats(): void {
     resetPanel();
-    panel.setLabel(" Stats ");
+    panel.setLabel(" Performance Board ");
     const s = storage.getStats90d();
     const runs = storage.getRuns(60);
     const recent = [...runs].reverse().slice(-25);
     const wpmSeries = recent.map((r) => r.netWpm);
     const accSeries = recent.map((r) => r.accuracy);
+    const cleanStreak = computeCleanStreak(runs);
+    const bestRun = runs.reduce<RunResult | null>((best, run) => {
+      if (!best || run.netWpm > best.netWpm) return run;
+      return best;
+    }, null);
+    const momentum = runs.length >= 2 ? round2(runs[0].netWpm - runs[Math.min(runs.length - 1, 9)].netWpm) : 0;
     const modeCounts = new Map<string, number>();
     for (const run of runs) {
       modeCounts.set(run.mode, (modeCounts.get(run.mode) ?? 0) + 1);
@@ -857,20 +1270,34 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       .join("\n");
 
     setPanelContent(
-      renderCard(
-        "90 Day Summary",
-        `{green-fg}Best{/green-fg}: ${s.bestWpm} WPM  ` +
-        `{yellow-fg}Average{/yellow-fg}: ${s.avgWpm} WPM  ` +
-        `{magenta-fg}Accuracy{/magenta-fg}: ${s.avgAccuracy}%  ` +
-        `{cyan-fg}Consistency{/cyan-fg}: ${s.consistency}  ` +
-        `Runs: ${s.totalRuns}`
+      renderHero(
+        "PERFORMANCE BOARD",
+        "90 day snapshot",
+        "A compact view of pace, accuracy, and stability so you can see whether the system is actually improving.",
+        THEME.brand
       ) +
       "\n\n" +
-      renderSection("WPM Trend", `{green-fg}${sparkline(wpmSeries)}{/green-fg}`, THEME.ok) +
-      "\n" +
-      renderSection("ACC Trend", `{magenta-fg}${sparkline(accSeries)}{/magenta-fg}`, "magenta") +
+      renderCard(
+        "Core Metrics",
+        `${renderPill("BEST", `${s.bestWpm} WPM`, THEME.ok)}  ` +
+        `${renderPill("AVG", `${s.avgWpm} WPM`, THEME.accent)}  ` +
+        `${renderPill("ACC", `${s.avgAccuracy}%`, THEME.info)}\n` +
+        `${renderPill("CONSISTENCY", `${s.consistency}`, THEME.brand)}  ` +
+        `${renderPill("RUNS", `${s.totalRuns}`, THEME.brand)}  ` +
+        `${renderPill("STREAK", `${cleanStreak}`, cleanStreak > 0 ? THEME.ok : THEME.muted)}\n` +
+        `Momentum: ${momentum >= 0 ? "+" : ""}${momentum} WPM over recent sessions\n` +
+        `Peak run: ${bestRun ? `${bestRun.netWpm} WPM at ${bestRun.accuracy}% accuracy` : "No data yet"}`,
+        THEME.brand
+      ) +
       "\n\n" +
-      renderSection("Mode Split", modeLines || "{gray-fg}No run data{/gray-fg}", THEME.brand) +
+      renderCard(
+        "Trendlines",
+        `{green-fg}${sparkline(wpmSeries)}{/green-fg}  WPM\n` +
+        `{magenta-fg}${sparkline(accSeries)}{/magenta-fg}  Accuracy`,
+        THEME.ok
+      ) +
+      "\n\n" +
+      renderSection("Mode Split", modeLines || "{gray-fg}No run data{/gray-fg}", THEME.info) +
       "\n\n" +
       renderSection("Recent Runs", recentRows || "{gray-fg}No recent runs{/gray-fg}", THEME.text)
     );
@@ -882,6 +1309,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
     resetPanel();
     panel.setLabel(" Coach Insights ");
     const coach = storage.getCoachInsights(50);
+    const adaptivePreview = composeAdaptiveDrill(coach.weakestKeys, coach.weakestBigrams, 45);
     const keys = coach.weakestKeys.length > 0
       ? coach.weakestKeys.map((k) => `${k.key}:${k.count}`).join(", ")
       : "No key mistake data yet";
@@ -889,15 +1317,34 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       ? coach.weakestBigrams.map((k) => `${k.bigram}:${k.count}`).join(", ")
       : "No bigram mistake data yet";
     setPanelContent(
+      renderHero(
+        "COACH INTEL",
+        "Mistake map",
+        "This board surfaces the friction patterns hiding underneath your average WPM.",
+        THEME.info
+      ) +
+      "\n\n" +
       renderCard(
-        "Coach",
-        `Runs analyzed: ${coach.runsAnalyzed}\n` +
-        `Consistency: ${coach.consistency}\n` +
-        `Fatigue score: ${coach.fatigueScore}\n` +
-        `Daily target: ${coach.dailyTarget}\n\n` +
-        `Weakest keys: ${keys}\n` +
-        `Weakest bigrams: ${bigrams}\n\n` +
-        "{gray-fg}Tip: Use Practice Training -> Adaptive Drill{/gray-fg}"
+        "Signal Readout",
+        `${renderPill("RUNS", `${coach.runsAnalyzed}`, THEME.brand)}  ` +
+        `${renderPill("CONSISTENCY", `${coach.consistency}`, THEME.ok)}  ` +
+        `${renderPill("FATIGUE", `${coach.fatigueScore}`, coach.fatigueScore > 4 ? THEME.bad : THEME.accent)}\n` +
+        `Daily target: ${coach.dailyTarget}`,
+        THEME.brand
+      ) +
+      "\n\n" +
+      renderCard(
+        "Weak Spots",
+        `Keys: ${keys}\n` +
+        `Bigrams: ${bigrams}`,
+        THEME.accent
+      ) +
+      "\n\n" +
+      renderCard(
+        "Adaptive Drill Preview",
+        `${previewText(adaptivePreview, 220)}\n\n` +
+        `Recommended move: open Practice Training and launch Adaptive Drill.`,
+        THEME.info
       )
     );
     screen.render();
@@ -1007,7 +1454,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       height: 2,
       tags: true,
       align: "center",
-      content: `{bold}{cyan-fg}Command Palette{/cyan-fg}{/bold}  {gray-fg}(quick actions){/gray-fg}`
+      content: `{bold}{cyan-fg}Quick Launch Palette{/cyan-fg}{/bold}  {gray-fg}(system + training actions){/gray-fg}`
     });
     const palette = blessed.list({
       parent: screen,
@@ -1021,9 +1468,9 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       vi: true,
       mouse: true,
       style: {
-        border: { fg: "magenta" },
-        item: { fg: "white" },
-        selected: { bg: "yellow", fg: "black", bold: true }
+        border: { fg: THEME.borderSecondary },
+        item: { fg: THEME.text },
+        selected: { bg: THEME.brand, fg: "black", bold: true }
       },
       items: actions.map((a) => a.label)
     });
@@ -1035,7 +1482,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       height: 1,
       tags: true,
       align: "center",
-      content: "{gray-fg}Type to filter · Backspace edit · Enter select · Esc close{/gray-fg}"
+      content: "{gray-fg}Type to filter · Backspace edits · Enter launches · Esc closes{/gray-fg}"
     });
     hint.hide();
     palette.focus();
@@ -1046,7 +1493,7 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
       palette.setItems(filtered.length > 0 ? filtered.map((a) => a.label) : ["No matching actions"]);
       palette.select(0);
       title.setContent(
-        `{bold}{cyan-fg}Command Palette{/cyan-fg}{/bold}  ` +
+        `{bold}{cyan-fg}Quick Launch Palette{/cyan-fg}{/bold}  ` +
         `{gray-fg}query:{/gray-fg} {yellow-fg}${escapeTags(query || "all")}{/yellow-fg}`
       );
       screen.render();
@@ -1151,6 +1598,10 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   };
   menu.on("select", (_item, idx) => triggerMenuPick(idx));
   menu.on("action", (_item, idx) => triggerMenuPick(idx));
+  menu.on("click", () => {
+    const selected = (menu as unknown as { selected?: number }).selected;
+    triggerMenuPick(typeof selected === "number" ? selected : 0);
+  });
 
   panel.on("wheelup", () => {
     panel.scroll(-2);
@@ -1207,13 +1658,161 @@ export function runTui(dbPath: string, options?: { perfHud?: boolean }): void {
   });
 }
 
+function toneForLevel(level: string): string {
+  switch (level) {
+    case "rookie":
+      return THEME.accentSoft;
+    case "very-easy":
+      return THEME.brand;
+    case "easy":
+      return THEME.ok;
+    case "medium":
+      return THEME.accent;
+    case "challenging":
+      return THEME.info;
+    case "hard":
+      return THEME.info;
+    case "expert":
+      return THEME.brand;
+    case "master":
+      return THEME.ok;
+    case "insane":
+      return THEME.bad;
+    case "legend":
+      return THEME.bad;
+    default:
+      return THEME.brand;
+  }
+}
+
+function levelDescriptor(level: string): string {
+  switch (level) {
+    case "rookie":
+      return "Shortest runs for first-day confidence and hand placement.";
+    case "very-easy":
+      return "Low-pressure onboarding with shorter tests and forgiving volume.";
+    case "easy":
+      return "Foundation work for clean rhythm and stable accuracy.";
+    case "medium":
+      return "Balanced pacing once beginner flow starts to feel automatic.";
+    case "challenging":
+      return "A step above medium with longer passages and more density.";
+    case "hard":
+      return "Longer passages with more pressure on consistency.";
+    case "expert":
+      return "High-demand runs for experienced typists protecting accuracy.";
+    case "master":
+      return "Expert text with longer runs designed to tax concentration.";
+    case "insane":
+      return "Extended expert runs built to stress pace, stamina, and focus.";
+    case "legend":
+      return "Maximum-length expert runs for players chasing pure endurance.";
+    default:
+      return "General purpose typing difficulty.";
+  }
+}
+
+function levelTip(level: string): string {
+  switch (level) {
+    case "rookie":
+      return "learning the game without overload";
+    case "very-easy":
+      return "rebuilding confidence and learning the interface";
+    case "easy":
+      return "locking in form before chasing raw speed";
+    case "medium":
+      return "keeping training balanced between speed and control";
+    case "challenging":
+      return "bridging the gap between comfort and pressure";
+    case "hard":
+      return "pushing stamina without jumping into chaos";
+    case "expert":
+      return "testing whether your fundamentals hold under pressure";
+    case "master":
+      return "building long-run control at expert density";
+    case "insane":
+      return "seeing how far your pace survives when the text fights back";
+    case "legend":
+      return "testing endurance when every mistake compounds";
+    default:
+      return "consistent practice";
+  }
+}
+
+function trainingTierGoal(tier: TrainingProgress["tier"]): number {
+  if (tier === "rookie") return 150;
+  if (tier === "cadet") return 350;
+  if (tier === "pro") return 700;
+  if (tier === "elite") return 1100;
+  return 1100;
+}
+
+function computeCleanStreak(runs: RunResult[]): number {
+  let streak = 0;
+  for (const run of runs) {
+    if (run.accuracy < 95) break;
+    streak += 1;
+  }
+  return streak;
+}
+
+function summarizeRunVerdict(result: RunResult): { title: string; summary: string } {
+  if (result.accuracy >= 98 && result.netWpm >= 80) {
+    return {
+      title: "Laser Clean",
+      summary: "High speed with almost no leakage. Keep this cadence and extend the session length."
+    };
+  }
+  if (result.accuracy >= 96) {
+    return {
+      title: "Stable And Clean",
+      summary: "Accuracy is holding. The next gain comes from staying loose and adding pace in small steps."
+    };
+  }
+  if (result.netWpm >= 70 && result.accuracy < 94) {
+    return {
+      title: "Fast But Leaking",
+      summary: "You have pace, but too much of it escapes into errors. Back off slightly and rebuild control."
+    };
+  }
+  return {
+    title: "Foundation Pass",
+    summary: "Useful work logged. Focus on cleaner keystrokes first, then let speed rise naturally."
+  };
+}
+
+function previewText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return escapeTags(normalized);
+  return `${escapeTags(normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd())}…`;
+}
+
+function renderHero(eyebrow: string, title: string, subtitle: string, tone: string): string {
+  return (
+    `{${THEME.muted}-fg}${eyebrow}{/${THEME.muted}-fg}\n` +
+    `{bold}{${tone}-fg}${escapeTags(title)}{/${tone}-fg}{/bold}\n` +
+    `{${tone}-fg}${"═".repeat(Math.max(18, Math.min(40, title.length + 10)))}{/${tone}-fg}\n` +
+    `${escapeTags(subtitle)}`
+  );
+}
+
+function renderPill(label: string, value: string, tone: string): string {
+  return `{black-fg}{${tone}-bg} ${escapeTags(label)} {/${tone}-bg}{/black-fg} {${tone}-fg}${escapeTags(value)}{/${tone}-fg}`;
+}
+
+function renderProgressRow(label: string, value: number, total: number, width: number, tone: string): string {
+  const safeTotal = Math.max(1, total);
+  const pct = Math.max(0, Math.min(100, Math.round((value / safeTotal) * 100)));
+  return `${escapeTags(label)}  {${tone}-fg}${progressBar(pct, width)}{/${tone}-fg} ${pct}%`;
+}
+
 function renderTargetDiff(target: string, typed: string, viewport: Viewport): string {
   const out: string[] = [];
   if (viewport.start > 0) out.push("{gray-fg}... {/gray-fg}");
   for (let i = viewport.start; i < viewport.end; i++) {
     const ch = escapeTags(target[i]);
     if (i < typed.length) {
-      out.push(`{white-fg}${ch}{/white-fg}`);
+      out.push(`{yellow-fg}${ch}{/yellow-fg}`);
     } else if (i === typed.length) {
       out.push(`{black-fg}{yellow-bg}${ch}{/yellow-bg}{/black-fg}`);
     } else {
@@ -1225,7 +1824,7 @@ function renderTargetDiff(target: string, typed: string, viewport: Viewport): st
 }
 
 function renderTypedDiff(target: string, typed: string, viewport: Viewport): string {
-  if (!typed) return "{white-fg}(start typing...){/white-fg}";
+  if (!typed) return "{gray-fg}(start typing...){/gray-fg}";
   const out: string[] = [];
   if (viewport.start > 0 && typed.length > viewport.start) out.push("{gray-fg}... {/gray-fg}");
   for (let i = viewport.start; i < Math.min(viewport.end, typed.length); i++) {
@@ -1275,7 +1874,7 @@ function renderKeyboard(lastKeyPress: { label: string; correct: boolean; at: num
       if (pressed) {
         cells.push(lastKeyPress?.correct ? `{black-fg}{green-bg}[${escapeTags(label)}]{/green-bg}{/black-fg}` : `{white-fg}{red-bg}[${escapeTags(label)}]{/red-bg}{/white-fg}`);
       } else {
-        cells.push(`{black-fg}{white-bg}[${escapeTags(label)}]{/white-bg}{/black-fg}`);
+        cells.push(`{white-fg}{blue-bg}[${escapeTags(label)}]{/blue-bg}{/white-fg}`);
       }
     }
     out.push(cells.join(" "));
@@ -1312,7 +1911,7 @@ function playEndSound(): void {
 
 function progressBar(percent: number, width: number): string {
   const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)));
-  return `[${"#".repeat(filled)}${"-".repeat(Math.max(0, width - filled))}]`;
+  return `▕${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}▏`;
 }
 
 function computeLiveMetrics(typedLength: number, correctChars: number, mistakes: number, elapsedMs: number): {
@@ -1367,21 +1966,21 @@ function sparkline(values: number[]): string {
 function bar(value: number, total: number, width: number): string {
   const pct = total <= 0 ? 0 : value / total;
   const filled = Math.max(0, Math.min(width, Math.round(pct * width)));
-  return `[${"#".repeat(filled)}${"-".repeat(Math.max(0, width - filled))}]`;
+  return `▕${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}▏`;
 }
 
-function renderCard(title: string, body: string): string {
+function renderCard(title: string, body: string, tone: string = THEME.brand): string {
   return (
-    `{bold}{${THEME.brand}-fg}${title}{/${THEME.brand}-fg}{/bold}\n` +
-    `{${THEME.muted}-fg}${"─".repeat(36)}{/${THEME.muted}-fg}\n` +
+    `{bold}{${tone}-fg}${escapeTags(title)}{/${tone}-fg}{/bold}\n` +
+    `{${tone}-fg}${"─".repeat(Math.max(22, Math.min(42, title.length + 12)))}{/${tone}-fg}\n` +
     `${body}`
   );
 }
 
 function renderSection(title: string, content: string, color: string): string {
   return (
-    `{bold}{${color}-fg}${title}{/${color}-fg}{/bold}\n` +
-    `{${THEME.muted}-fg}${"·".repeat(28)}{/${THEME.muted}-fg}\n` +
+    `{bold}{${color}-fg}${escapeTags(title)}{/${color}-fg}{/bold}\n` +
+    `{${THEME.muted}-fg}${"·".repeat(Math.max(20, Math.min(34, title.length + 10)))}{/${THEME.muted}-fg}\n` +
     `${content}`
   );
 }
@@ -1397,7 +1996,7 @@ function runStartTransition(panel: blessed.Widgets.BoxElement, mode: "lesson" | 
       panel.setContent(
         renderCard(
           `Starting ${mode.toUpperCase()}`,
-          `{${THEME.accent}-fg}${frames[i % frames.length]} Preparing session...{/${THEME.accent}-fg}\n` +
+          `{${THEME.accent}-fg}${frames[i % frames.length]} Calibrating text lane and feedback board...{/${THEME.accent}-fg}\n` +
           `${progressBar(pct, 26)} ${pct}%`
         )
       );
@@ -1422,7 +2021,7 @@ function runExitTransition(panel: blessed.Widgets.BoxElement, onDone: () => void
       panel.setContent(
         renderCard(
           "Finalizing Run",
-          `{${THEME.brand}-fg}${frames[i % frames.length]} Scoring and saving...{/${THEME.brand}-fg}\n` +
+          `{${THEME.brand}-fg}${frames[i % frames.length]} Scoring run, storing history, refreshing coach...{/${THEME.brand}-fg}\n` +
           `${progressBar(pct, 22)}`
         )
       );

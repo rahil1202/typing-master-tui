@@ -4,12 +4,30 @@ import { ProgressBar, Spinner } from "@inkjs/ui";
 import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
-import { getDifficultyConfig, getLessonsForDifficulty, makeParagraphTest, normalizeCustomText, pickQuote, type Difficulty } from "./core/content.js";
+import {
+  buildCustomModeText,
+  getCustomModeOptions,
+  getDifficultyConfig,
+  getLessonsForDifficulty,
+  makeParagraphTest,
+  type CustomMode,
+  type Difficulty
+} from "./core/content.js";
 import { Storage, type TrainingProgress } from "./core/storage.js";
 import { TypingSession, type RunMode } from "./core/typingEngine.js";
 
-type GameLevel = "very-easy" | "easy" | "medium" | "hard" | "expert" | "insane";
-type View = "loading" | "menu" | "typing" | "result" | "stats" | "level" | "training";
+type GameLevel =
+  | "rookie"
+  | "very-easy"
+  | "easy"
+  | "medium"
+  | "challenging"
+  | "hard"
+  | "expert"
+  | "master"
+  | "insane"
+  | "legend";
+type View = "loading" | "menu" | "typing" | "result" | "stats" | "level" | "training" | "custom-mode";
 
 interface ActiveRun {
   mode: RunMode;
@@ -31,7 +49,104 @@ const MENU_ITEMS = [
   "Quit"
 ] as const;
 
-const LEVELS: GameLevel[] = ["very-easy", "easy", "medium", "hard", "expert", "insane"];
+const LEVELS: GameLevel[] = ["rookie", "very-easy", "easy", "medium", "challenging", "hard", "expert", "master", "insane", "legend"];
+const CUSTOM_MODES = getCustomModeOptions();
+
+function levelTone(level: GameLevel): "cyan" | "green" | "yellow" | "magenta" | "red" {
+  switch (level) {
+    case "rookie":
+      return "cyan";
+    case "very-easy":
+      return "cyan";
+    case "easy":
+      return "green";
+    case "medium":
+      return "yellow";
+    case "challenging":
+      return "magenta";
+    case "hard":
+      return "magenta";
+    case "expert":
+      return "red";
+    case "master":
+      return "green";
+    case "insane":
+    case "legend":
+      return "red";
+    default:
+      return "cyan";
+  }
+}
+
+function levelDescription(level: GameLevel): string {
+  switch (level) {
+    case "rookie":
+      return "first-day onboarding";
+    case "very-easy":
+      return "short, low-pressure onboarding";
+    case "easy":
+      return "steady foundation work";
+    case "medium":
+      return "balanced speed and control";
+    case "challenging":
+      return "pressure before hard mode";
+    case "hard":
+      return "stamina under pressure";
+    case "expert":
+      return "high-demand accuracy";
+    case "master":
+      return "long expert-length control";
+    case "insane":
+      return "maximum pressure runs";
+    case "legend":
+      return "endurance and density";
+    default:
+      return "general training";
+  }
+}
+
+function previewText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function StatPill({
+  label,
+  value,
+  color
+}: {
+  label: string;
+  value: string;
+  color: "cyan" | "green" | "yellow" | "magenta" | "red" | "blue";
+}): React.JSX.Element {
+  return (
+    <Box marginRight={1}>
+      <Text backgroundColor={color} color="black">
+        {" "}{label}{" "}
+      </Text>
+      <Text> </Text>
+      <Text color={color}>{value}</Text>
+    </Box>
+  );
+}
+
+function SectionCard({
+  title,
+  color,
+  children
+}: {
+  title: string;
+  color: "cyan" | "green" | "yellow" | "magenta" | "red" | "blue" | "white";
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} paddingY={0} marginBottom={1}>
+      <Text color={color}>{title}</Text>
+      {children}
+    </Box>
+  );
+}
 
 export function runInkApp(dbPath: string): void {
   render(<InkTypingApp dbPath={dbPath} />);
@@ -53,6 +168,7 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
   const [selectedLevel, setSelectedLevel] = useState<GameLevel>("easy");
   const [selectedMenu, setSelectedMenu] = useState(0);
   const [levelCursor, setLevelCursor] = useState(LEVELS.indexOf("easy"));
+  const [customModeCursor, setCustomModeCursor] = useState(0);
   const [resultText, setResultText] = useState<string>("");
   const [trainingProgress, setTrainingProgress] = useState<TrainingProgress>(() => storage.getTrainingProgress());
 
@@ -81,19 +197,33 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
 
   const getLevelProfile = (level: GameLevel): { difficulty: Difficulty; extraWords: number; label: string } => {
     switch (level) {
+      case "rookie":
+        return { difficulty: "beginner", extraWords: -10, label: "Rookie" };
       case "very-easy":
         return { difficulty: "beginner", extraWords: -6, label: "Very Easy" };
       case "easy":
         return { difficulty: "beginner", extraWords: 0, label: "Easy" };
       case "medium":
         return { difficulty: "intermediate", extraWords: 0, label: "Medium" };
+      case "challenging":
+        return { difficulty: "intermediate", extraWords: 8, label: "Challenging" };
       case "hard":
         return { difficulty: "advanced", extraWords: 4, label: "Hard" };
       case "expert":
         return { difficulty: "expert", extraWords: 0, label: "Expert" };
+      case "master":
+        return { difficulty: "expert", extraWords: 10, label: "Master" };
+      case "insane":
+        return { difficulty: "expert", extraWords: 18, label: "Insane" };
       default:
-        return { difficulty: "expert", extraWords: 10, label: "Insane" };
+        return { difficulty: "expert", extraWords: 26, label: "Legend" };
     }
+  };
+
+  const readImportedCustomText = (): string => {
+    const imported = path.join(os.homedir(), ".typing-master", "last-import.txt");
+    if (!fs.existsSync(imported)) return "";
+    return fs.readFileSync(imported, "utf8");
   };
 
   const liveMetrics = useMemo(() => {
@@ -186,21 +316,15 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
         const profile = getLevelProfile(selectedLevel);
         const cfg = getDifficultyConfig(profile.difficulty);
         const count = Math.max(12, cfg.wordCount + profile.extraWords);
-        const text = makeParagraphTest(profile.difficulty, count, Math.floor(Date.now() / 1000) + cfg.seedOffset);
+        const flavor = (Date.now() + cfg.seedOffset) % 2 === 0 ? "mixed" : "story";
+        const text = makeParagraphTest(profile.difficulty, count, Math.floor(Date.now() / 1000) + cfg.seedOffset, flavor);
         startRun("test", text, `paragraph-${selectedLevel}-${Date.now()}`, profile.difficulty);
         break;
       }
-      case "Custom Test": {
-        const profile = getLevelProfile(selectedLevel);
-        const cfg = getDifficultyConfig(profile.difficulty);
-        const imported = path.join(os.homedir(), ".typing-master", "last-import.txt");
-        let text = "paste custom text by running `typing-master import <file>` first";
-        if (fs.existsSync(imported)) text = fs.readFileSync(imported, "utf8");
-        text = normalizeCustomText(text, cfg.custom);
-        if (!text) text = pickQuote();
-        startRun("custom", text, `custom-${selectedLevel}-${Date.now()}`, profile.difficulty);
+      case "Custom Test":
+        setCustomModeCursor(0);
+        setView("custom-mode");
         break;
-      }
       case "Stats":
         setView("stats");
         break;
@@ -249,6 +373,23 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
       return;
     }
 
+    if (view === "custom-mode") {
+      if (key.escape) {
+        setView("menu");
+        return;
+      }
+      if (key.upArrow) setCustomModeCursor((i) => (i <= 0 ? CUSTOM_MODES.length - 1 : i - 1));
+      else if (key.downArrow) setCustomModeCursor((i) => (i + 1) % CUSTOM_MODES.length);
+      else if (key.return) {
+        const picked = CUSTOM_MODES[customModeCursor];
+        if (!picked) return;
+        const profile = getLevelProfile(selectedLevel);
+        const built = buildCustomModeText(picked.id, profile.difficulty, Date.now(), readImportedCustomText());
+        startRun("custom", built.text, built.textId, profile.difficulty);
+      }
+      return;
+    }
+
     if (view === "stats" || view === "result" || view === "training") {
       if (view === "training" && key.return) {
         startTrainingDrill();
@@ -287,12 +428,18 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
   });
 
   const stats = storage.getStats90d();
+  const recentRuns = storage.getRuns(6);
+  const activeTone = levelTone(selectedLevel);
+  const nextLesson = getLessonsForDifficulty(getLevelProfile(selectedLevel).difficulty)[0];
 
   if (view === "loading") {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color="cyanBright">Typing Master</Text>
-        <Spinner label="Building aesthetic terminal UI..." />
+        <SectionCard title="ARCADE TERMINAL" color="cyan">
+          <Text color="cyanBright">Typing Master</Text>
+          <Text color="gray">Preparing the fallback UI with the same training flow.</Text>
+        </SectionCard>
+        <Spinner label="Building interface..." />
         <Box marginTop={1}>
           <ProgressBar value={loadingPct} />
         </Box>
@@ -303,20 +450,21 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
   if (view === "typing" && run) {
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text>
-          <Text color="yellow">Typing Master</Text> · {profile.nickname} · {selectedLevel.toUpperCase()}
-        </Text>
-        <Text>
-          <Text color="green">{liveMetrics.wpm} WPM</Text>  <Text color="yellow">{liveMetrics.acc}% ACC</Text>  <Text color="red">{mistakes} ERR</Text>  <Text color="cyan">{liveMetrics.progress}%</Text>
-        </Text>
+        <SectionCard title={`${run.mode.toUpperCase()} RUN`} color={activeTone}>
+          <Text color={activeTone}>Typing Master · {profile.nickname} · {getLevelProfile(selectedLevel).label}</Text>
+          <Box marginTop={1}>
+            <StatPill label="WPM" value={String(liveMetrics.wpm)} color="green" />
+            <StatPill label="ACC" value={`${liveMetrics.acc}%`} color="yellow" />
+            <StatPill label="ERR" value={String(mistakes)} color={mistakes > 0 ? "red" : "blue"} />
+            <StatPill label="FLOW" value={`${liveMetrics.progress}%`} color={activeTone === "red" ? "magenta" : "cyan"} />
+          </Box>
+        </SectionCard>
 
-        <Box marginTop={1} flexDirection="column">
-          <Text color="yellowBright">Input Text (target)</Text>
+        <SectionCard title="READ LANE" color="yellow">
           <Text color="yellow">{targetView}</Text>
-        </Box>
+        </SectionCard>
 
-        <Box marginTop={1} flexDirection="column">
-          <Text color="white">Output</Text>
+        <SectionCard title="TYPE LANE" color={mistakes > 0 ? "red" : "green"}>
           <Text>
             {outputColorChunks.length === 0 && <Text color="gray">(start typing...)</Text>}
             {outputColorChunks.map((c, i) => (
@@ -325,18 +473,13 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
               </Text>
             ))}
           </Text>
-        </Box>
+        </SectionCard>
 
-        {settings.showKeyboard && (
-          <Box marginTop={1} flexDirection="column">
-            <Text color="cyan">Keyboard View Enabled</Text>
-            <Text color="gray">(Press F2 in Blessed mode for detailed keycaps)</Text>
-          </Box>
-        )}
-
-        <Box marginTop={1}>
-          <Text color="gray">ESC to exit run</Text>
-        </Box>
+        <SectionCard title="FOCUS" color="blue">
+          <Text color="gray">Keep your eyes on the read lane. Flow mode keeps the run moving even on mistakes.</Text>
+          <Text color="gray">ESC exits the run.</Text>
+          {settings.showKeyboard && <Text color="cyan">Keyboard overlay is richer in Blessed mode.</Text>}
+        </SectionCard>
       </Box>
     );
   }
@@ -345,16 +488,23 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
     const runs = storage.getRuns(8);
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color="cyanBright">Stats</Text>
-        <Text color="green">Best: {stats.bestWpm} WPM</Text>
-        <Text color="yellow">Average: {stats.avgWpm} WPM</Text>
-        <Text color="magenta">Accuracy: {stats.avgAccuracy}%</Text>
-        <Text color="blue">Consistency: {stats.consistency}</Text>
-        <Text color="gray">Recent Runs:</Text>
-        {runs.map((r, i) => (
-          <Text key={i}>#{i + 1} {r.netWpm} WPM · {r.accuracy}%</Text>
-        ))}
-        <Text color="gray">Press any key to return</Text>
+        <SectionCard title="PERFORMANCE BOARD" color="cyan">
+          <Box>
+            <StatPill label="BEST" value={`${stats.bestWpm} WPM`} color="green" />
+            <StatPill label="AVG" value={`${stats.avgWpm} WPM`} color="yellow" />
+            <StatPill label="ACC" value={`${stats.avgAccuracy}%`} color="magenta" />
+            <StatPill label="CONS" value={String(stats.consistency)} color="blue" />
+          </Box>
+        </SectionCard>
+        <SectionCard title="RECENT RUNS" color="white">
+          {runs.map((r, i) => (
+            <Text key={i}>
+              #{i + 1} {r.mode.toUpperCase()} · {r.netWpm} WPM · {r.accuracy}% · {r.mistakes} err
+            </Text>
+          ))}
+          {runs.length === 0 && <Text color="gray">No run history yet.</Text>}
+          <Text color="gray">Press any key to return.</Text>
+        </SectionCard>
       </Box>
     );
   }
@@ -362,14 +512,42 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
   if (view === "level") {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color="cyanBright">Select Level</Text>
-        {LEVELS.map((l, i) => (
-          <Text key={l} color={i === levelCursor ? "black" : "white"} backgroundColor={i === levelCursor ? "cyan" : undefined}>
-            {i === levelCursor ? "▶ " : "  "}
-            {l.toUpperCase()}
-          </Text>
-        ))}
-        <Text color="gray">Enter to apply · Esc to cancel</Text>
+        <SectionCard title="LEVEL SELECT" color={activeTone}>
+          <Text color={activeTone}>Choose the pressure profile for lessons and tests.</Text>
+          {LEVELS.map((l, i) => (
+            <Text key={l} color={i === levelCursor ? "black" : "white"} backgroundColor={i === levelCursor ? levelTone(l) : undefined}>
+              {i === levelCursor ? "▶ " : "  "}
+              {l.toUpperCase()}  · {levelDescription(l)}
+            </Text>
+          ))}
+          <Text color="gray">Enter applies the highlighted level. Esc cancels.</Text>
+        </SectionCard>
+      </Box>
+    );
+  }
+
+  if (view === "custom-mode") {
+    const picked = CUSTOM_MODES[customModeCursor];
+    const built = picked
+      ? buildCustomModeText(picked.id, getLevelProfile(selectedLevel).difficulty, 12345, readImportedCustomText())
+      : null;
+    return (
+      <Box flexDirection="column" padding={1}>
+        <SectionCard title="CUSTOM TEST TYPES" color={activeTone}>
+          <Text color={activeTone}>Choose the kind of content you want to type.</Text>
+          {CUSTOM_MODES.map((mode, i) => (
+            <Text key={mode.id} color={i === customModeCursor ? "black" : "white"} backgroundColor={i === customModeCursor ? activeTone : undefined}>
+              {i === customModeCursor ? "▶ " : "  "}
+              {mode.label} · {mode.description}
+            </Text>
+          ))}
+        </SectionCard>
+        <SectionCard title="PREVIEW" color="yellow">
+          <Text>{picked?.label}</Text>
+          <Text color="gray">{picked?.description}</Text>
+          <Text>{previewText(built?.text ?? "", 220)}</Text>
+          <Text color="gray">Enter starts the selected mode. Esc cancels.</Text>
+        </SectionCard>
       </Box>
     );
   }
@@ -378,13 +556,17 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
     const tier = trainingProgress.tier.toUpperCase();
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color="cyanBright">Practice Training: 0 to Best</Text>
-        <Text color="yellow">Tier: {tier}</Text>
-        <Text color="green">Points: {trainingProgress.points}</Text>
-        <Text>Drills: {trainingProgress.completedDrills}</Text>
-        <Text>Best WPM: {trainingProgress.bestWpm}</Text>
-        <Text>Best Accuracy: {trainingProgress.bestAccuracy}%</Text>
-        <Text color="gray">Press Enter to start guided drill · Any other key to go back</Text>
+        <SectionCard title="0 TO BEST PROGRAM" color="cyan">
+          <Box>
+            <StatPill label="TIER" value={tier} color={activeTone === "red" ? "magenta" : "cyan"} />
+            <StatPill label="PTS" value={String(trainingProgress.points)} color="green" />
+            <StatPill label="DRILLS" value={String(trainingProgress.completedDrills)} color="yellow" />
+          </Box>
+          <Text>Best WPM: {trainingProgress.bestWpm}</Text>
+          <Text>Best Accuracy: {trainingProgress.bestAccuracy}%</Text>
+          <Text>Recommended next lesson: {nextLesson ? nextLesson.title : "No lesson available"}</Text>
+          <Text color="gray">Press Enter to start the guided drill. Any other key returns.</Text>
+        </SectionCard>
       </Box>
     );
   }
@@ -392,31 +574,39 @@ function InkTypingApp({ dbPath }: { dbPath: string }): React.JSX.Element {
   if (view === "result") {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color="greenBright">{resultText}</Text>
-        <Text color="gray">Press any key to continue</Text>
+        <SectionCard title="RUN COMPLETE" color="green">
+          <Text color="greenBright">{resultText}</Text>
+          <Text color="gray">Press any key to continue.</Text>
+        </SectionCard>
       </Box>
     );
   }
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Text>
-        <Text color="yellow">Typing Master (Ink UI)</Text> · {profile.nickname} · {selectedLevel.toUpperCase()}
-      </Text>
-      <Text>
-        <Text color="green">Best {stats.bestWpm} WPM</Text>  <Text color="yellow">Acc {stats.avgAccuracy}%</Text>  Sound:{settings.sound ? "ON" : "OFF"}  Keyboard:{settings.showKeyboard ? "ON" : "OFF"}
-      </Text>
-      <Box marginTop={1} flexDirection="column">
+      <SectionCard title="MISSION CONTROL" color={activeTone}>
+        <Text color={activeTone}>Typing Master (Ink UI) · {profile.nickname} · {getLevelProfile(selectedLevel).label}</Text>
+        <Text color="gray">Fallback interface with the same flow-first game loop.</Text>
+        <Box marginTop={1}>
+          <StatPill label="BEST" value={`${stats.bestWpm} WPM`} color="green" />
+          <StatPill label="ACC" value={`${stats.avgAccuracy}%`} color="yellow" />
+          <StatPill label="RUNS" value={String(stats.totalRuns)} color="blue" />
+        </Box>
+      </SectionCard>
+      <SectionCard title="MODE DECK" color="cyan">
         {MENU_ITEMS.map((item, i) => (
-          <Text key={item} color={i === selectedMenu ? "black" : "white"} backgroundColor={i === selectedMenu ? "cyan" : undefined}>
+          <Text key={item} color={i === selectedMenu ? "black" : "white"} backgroundColor={i === selectedMenu ? activeTone : undefined}>
             {i === selectedMenu ? "▶ " : "  "}
             {item}
           </Text>
         ))}
-      </Box>
-      <Box marginTop={1}>
-        <Text color="gray">Arrow keys + Enter</Text>
-      </Box>
+      </SectionCard>
+      <SectionCard title="TODAY" color="white">
+        <Text>Next lesson: {nextLesson ? nextLesson.title : "No lesson available"}</Text>
+        <Text>Recent sessions logged: {recentRuns.length}</Text>
+        <Text>Current level focus: {levelDescription(selectedLevel)}</Text>
+        <Text color="gray">Arrow keys move. Enter launches.</Text>
+      </SectionCard>
     </Box>
   );
 }
