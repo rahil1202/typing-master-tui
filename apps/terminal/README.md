@@ -14,6 +14,23 @@ npm install -g typing-master-terminal
 typing-master
 ```
 
+## Modern TUI layout
+
+The default `typing-master` UI uses a modern full-screen Blessed layout with:
+
+- Header (title + live profile stats)
+- Left sidebar menu (`Practice`, `Test`, `Race`, `Stats`, `Settings`)
+- Main content panel with clickable controls
+- Footer shortcut bar
+
+### Mouse + keyboard interaction
+
+- Click menu items, selectors, list rows, and buttons
+- Scroll main panel/leaderboard with mouse wheel
+- Arrow keys navigate focused lists
+- `Enter` activates selected item
+- `Tab` / `Shift+Tab` cycles focus
+
 ## Commands
 
 ```bash
