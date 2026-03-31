@@ -1,6 +1,15 @@
 import blessed from "blessed";
 import { UI_COLORS } from "./theme.js";
 
+const DEFAULT_SCREEN_WIDTH = 120;
+const COMPACT_THRESHOLD = 100;
+const SIDEBAR_WIDTH_DEFAULT = 26;
+const SIDEBAR_WIDTH_COMPACT = 22;
+const CONTENT_LEFT_DEFAULT = 28;
+const CONTENT_LEFT_COMPACT = 24;
+const CONTENT_WIDTH_DEFAULT = "100%-29";
+const CONTENT_WIDTH_COMPACT = "100%-25";
+
 export interface AppLayout {
   root: blessed.Widgets.BoxElement;
   frame: blessed.Widgets.BoxElement;
@@ -8,6 +17,12 @@ export interface AppLayout {
   sidebar: blessed.Widgets.ListElement;
   content: blessed.Widgets.BoxElement;
   footer: blessed.Widgets.BoxElement;
+}
+
+interface LayoutMetrics {
+  sidebarWidth: number;
+  contentLeft: number;
+  contentWidth: string;
 }
 
 export function createMainLayout(screen: blessed.Widgets.Screen, sidebarItems: string[]): AppLayout {
@@ -57,9 +72,9 @@ export function createMainLayout(screen: blessed.Widgets.Screen, sidebarItems: s
       bg: UI_COLORS.panelBg,
       fg: UI_COLORS.text,
       border: { fg: UI_COLORS.border },
-      selected: { bg: UI_COLORS.accent, fg: "black", bold: true },
+      selected: { bg: UI_COLORS.accent, fg: UI_COLORS.textInverted, bold: true },
       item: { fg: UI_COLORS.text },
-      hover: { bg: UI_COLORS.accentStrong, fg: "black" }
+      hover: { bg: UI_COLORS.accentStrong, fg: UI_COLORS.textInverted }
     }
   });
 
@@ -92,12 +107,27 @@ export function createMainLayout(screen: blessed.Widgets.Screen, sidebarItems: s
     content: " ↑/↓ navigate · Enter select · Click select/focus · Wheel scroll · q quit "
   });
 
+  const applyLayoutMetrics = (metrics: LayoutMetrics): void => {
+    sidebar.width = metrics.sidebarWidth;
+    content.left = metrics.contentLeft;
+    content.width = metrics.contentWidth;
+  };
+
   const updateLayout = (): void => {
-    const cols = typeof screen.width === "number" ? screen.width : 120;
-    const compact = cols < 100;
-    sidebar.width = compact ? 22 : 26;
-    content.left = compact ? 24 : 28;
-    content.width = compact ? "100%-25" : "100%-29";
+    const cols = typeof screen.width === "number" ? screen.width : DEFAULT_SCREEN_WIDTH;
+    const compact = cols < COMPACT_THRESHOLD;
+    const metrics: LayoutMetrics = compact
+      ? {
+          sidebarWidth: SIDEBAR_WIDTH_COMPACT,
+          contentLeft: CONTENT_LEFT_COMPACT,
+          contentWidth: CONTENT_WIDTH_COMPACT
+        }
+      : {
+          sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
+          contentLeft: CONTENT_LEFT_DEFAULT,
+          contentWidth: CONTENT_WIDTH_DEFAULT
+        };
+    applyLayoutMetrics(metrics);
   };
 
   screen.on("resize", () => {

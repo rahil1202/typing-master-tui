@@ -22,6 +22,7 @@ export const UI_COLORS = {
   panelBg: THEME.nord1,
   panelAltBg: THEME.nord2,
   text: THEME.nord6,
+  textInverted: THEME.nord0,
   muted: THEME.nord4,
   border: THEME.nord3,
   accent: THEME.nord8,

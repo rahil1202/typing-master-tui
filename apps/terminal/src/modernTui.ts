@@ -7,6 +7,11 @@ import { UI_COLORS } from "./ui/theme.js";
 
 const MENU_ITEMS = ["Practice", "Test", "Race", "Stats", "Settings"];
 
+type FocusItem = {
+  element: blessed.Widgets.BlessedElement;
+  name: string;
+};
+
 export function runTui(dbPath: string, _options?: { perfHud?: boolean }): void {
   const storage = new Storage(dbPath);
   const profile = storage.getOrCreateProfile(os.userInfo().username || "Guest");
@@ -77,19 +82,19 @@ export function runTui(dbPath: string, _options?: { perfHud?: boolean }): void {
     screen.render();
   };
 
-  const focusables: blessed.Widgets.BlessedElement[] = [
-    sidebar,
-    startButton,
-    difficulty,
-    language,
-    profileSelector,
-    leaderboard
+  const focusables: FocusItem[] = [
+    { element: sidebar, name: "Menu" },
+    { element: startButton, name: "Start Test" },
+    { element: difficulty, name: "Difficulty" },
+    { element: language, name: "Language" },
+    { element: profileSelector, name: "Profile" },
+    { element: leaderboard, name: "Leaderboard" }
   ];
 
-  for (const widget of focusables) {
-    widget.on("click", () => {
-      widget.focus();
-      updateStatus(`Focused: ${(widget as unknown as { options?: { label?: string } }).options?.label ?? "component"}`);
+  for (const item of focusables) {
+    item.element.on("click", () => {
+      item.element.focus();
+      updateStatus(`Focused: ${item.name}`);
     });
   }
 
@@ -98,9 +103,12 @@ export function runTui(dbPath: string, _options?: { perfHud?: boolean }): void {
     updateStatus(`Selected menu: ${MENU_ITEMS[idx] ?? "Unknown"}`);
   });
 
-  difficulty.on("select", (_item, idx) => updateStatus(`Difficulty: ${difficulty.getItem(idx)?.getText() ?? "n/a"}`));
-  language.on("select", (_item, idx) => updateStatus(`Language: ${language.getItem(idx)?.getText() ?? "n/a"}`));
-  profileSelector.on("select", (_item, idx) => updateStatus(`Profile: ${profileSelector.getItem(idx)?.getText() ?? "n/a"}`));
+  const bindSelectorStatus = (selector: blessed.Widgets.ListElement, label: string): void => {
+    selector.on("select", (_item, idx) => updateStatus(`${label}: ${selector.getItem(idx)?.getText() ?? "n/a"}`));
+  };
+  bindSelectorStatus(difficulty, "Difficulty");
+  bindSelectorStatus(language, "Language");
+  bindSelectorStatus(profileSelector, "Profile");
   leaderboard.on("select", (_item, idx) => updateStatus(`Leaderboard row ${idx + 1} selected`));
 
   const runStartAction = (): void => {
@@ -121,18 +129,15 @@ export function runTui(dbPath: string, _options?: { perfHud?: boolean }): void {
     screen.render();
   });
 
-  screen.key(["tab"], () => {
-    const idx = focusables.findIndex((el) => el === screen.focused);
-    const next = focusables[(idx + 1 + focusables.length) % focusables.length];
-    next.focus();
+  const cycleFocus = (direction: 1 | -1): void => {
+    const idxRaw = focusables.findIndex((item) => item.element === screen.focused);
+    const idx = idxRaw < 0 ? 0 : idxRaw;
+    const next = focusables[(idx + direction + focusables.length) % focusables.length];
+    next.element.focus();
     screen.render();
-  });
-  screen.key(["S-tab"], () => {
-    const idx = focusables.findIndex((el) => el === screen.focused);
-    const next = focusables[(idx - 1 + focusables.length) % focusables.length];
-    next.focus();
-    screen.render();
-  });
+  };
+  screen.key(["tab"], () => cycleFocus(1));
+  screen.key(["S-tab"], () => cycleFocus(-1));
 
   screen.key(["q", "C-c"], () => {
     storage.close();

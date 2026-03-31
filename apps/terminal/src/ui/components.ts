@@ -2,7 +2,7 @@ import blessed from "blessed";
 import { UI_COLORS } from "./theme.js";
 
 export function createButton(parent: blessed.Widgets.Node, label: string, left: number | string, top: number | string): blessed.Widgets.BoxElement {
-  const button = blessed.box({
+  return blessed.box({
     parent,
     mouse: true,
     keys: true,
@@ -17,19 +17,10 @@ export function createButton(parent: blessed.Widgets.Node, label: string, left: 
       bg: UI_COLORS.panelAltBg,
       fg: UI_COLORS.text,
       border: { fg: UI_COLORS.border },
-      focus: { bg: UI_COLORS.accent, fg: "black", border: { fg: UI_COLORS.accentStrong } },
-      hover: { bg: UI_COLORS.accentStrong, fg: "black", border: { fg: UI_COLORS.accentStrong } }
+      focus: { bg: UI_COLORS.accent, fg: UI_COLORS.textInverted, border: { fg: UI_COLORS.accentStrong } },
+      hover: { bg: UI_COLORS.accentStrong, fg: UI_COLORS.textInverted, border: { fg: UI_COLORS.accentStrong } }
     }
   });
-  button.on("focus", () => {
-    button.style.bg = UI_COLORS.accent;
-    button.style.fg = "black";
-  });
-  button.on("blur", () => {
-    button.style.bg = UI_COLORS.panelAltBg;
-    button.style.fg = UI_COLORS.text;
-  });
-  return button;
 }
 
 export function createSelector(
@@ -55,8 +46,8 @@ export function createSelector(
       bg: UI_COLORS.panelAltBg,
       fg: UI_COLORS.text,
       border: { fg: UI_COLORS.border },
-      selected: { bg: UI_COLORS.accent, fg: "black", bold: true },
-      hover: { bg: UI_COLORS.accentStrong, fg: "black" }
+      selected: { bg: UI_COLORS.accent, fg: UI_COLORS.textInverted, bold: true },
+      hover: { bg: UI_COLORS.accentStrong, fg: UI_COLORS.textInverted }
     }
   });
 }
@@ -84,8 +75,8 @@ export function createLeaderboard(parent: blessed.Widgets.Node, left: number | s
       bg: UI_COLORS.panelBg,
       fg: UI_COLORS.text,
       border: { fg: UI_COLORS.border },
-      selected: { bg: UI_COLORS.accent, fg: "black", bold: true },
-      hover: { bg: UI_COLORS.accentStrong, fg: "black" }
+      selected: { bg: UI_COLORS.accent, fg: UI_COLORS.textInverted, bold: true },
+      hover: { bg: UI_COLORS.accentStrong, fg: UI_COLORS.textInverted }
     },
     scrollbar: { ch: " ", style: { bg: UI_COLORS.accent } },
     scrollable: true,
